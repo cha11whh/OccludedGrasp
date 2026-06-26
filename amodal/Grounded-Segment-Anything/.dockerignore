@@ -1,0 +1,9 @@
+*.pth
+*.pth.*
+*.pt
+*.ckpt
+*.ipynb
+assets/
+.git/
+__pycache__/
+**/__pycache__/

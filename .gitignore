@@ -1,0 +1,50 @@
+# Runtime and cache files
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.hf_cache/
+*.egg-info/
+
+# Environments and local dependency caches
+.deps/
+env/
+venv/
+.venv/
+env_isaaclab/
+IsaacLab/
+
+# Model checkpoints and archives
+checkpoints/
+*ckpt*/
+*.pth
+*.pth.*
+*.pt
+*.ckpt
+*.safetensors
+*.zip
+*.tar
+*.tar.gz
+
+# Datasets, generated masks, and experiment outputs
+outputs/
+output/
+experiment_output*/
+experiment_input/
+targeted_modal_masks*/
+runs/
+
+# Large generated media and depth arrays
+*.npy
+*.npz
+*.png
+*.jpg
+*.jpeg
+*.HEIC
+*.gif
+*.mp4
+*.avi
+*.usd
+*.usda
+*.usdc

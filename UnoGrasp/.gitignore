@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*.so
+.DS_Store
+
+.cache/
+.pytest_cache/
+.mypy_cache/
+
+.ipynb_checkpoints/
+
+runs/
+wandb/
+logs/
+checkpoints/
+outputs/
+
+# model checkpoints
+*.ckpt
+*.pth
+*.pt
+*.tar
+*.log
+*.out
+*.err
+*.safetensors
+*.bin

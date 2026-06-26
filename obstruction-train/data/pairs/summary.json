@@ -1,0 +1,7 @@
+{
+  "total_pairs": 163935,
+  "train_pairs": 156204,
+  "val_pairs": 7731,
+  "skipped_scene_views": 4024,
+  "neg_per_positive": 3
+}

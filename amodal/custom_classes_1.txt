@@ -1,0 +1,15 @@
+pouch
+bag
+handbag
+thermos
+bottle
+cup
+mug
+box
+cardboard box
+package
+container
+case
+cable
+charger
+paper

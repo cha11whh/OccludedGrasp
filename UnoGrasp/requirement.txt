@@ -1,0 +1,10 @@
+transformers==4.50.0
+deepspeed==0.16.4
+psutil
+flash_attn==2.7.4.post1
+triton
+accelerate
+torchcodec
+qwen-vl-utils
+scipy
+editdistance
