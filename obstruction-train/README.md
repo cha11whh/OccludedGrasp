@@ -144,3 +144,24 @@ python -m obstruction_train.evaluate_pair_model \
   --depth-transform inverse
 '
 ```
+
+## Graph Policy Training and Replanning
+
+The Graph Transformer policy now accepts obstruction, support, and nearby-object
+edge features. It also uses a trainable hashed task-text encoder, so target
+instructions and `clear_table` tasks condition the policy rather than being used
+only by a caller. Train from demonstration JSONL, one state/action per row:
+
+```json
+{"objects": [{"id": 1, "bbox": [0, 0, 10, 10]}], "relations": [], "task_mode": "target", "target_id": 1, "instruction": "grasp the red cup", "next_action_id": 1}
+```
+
+```bash
+python -m obstruction_train.train_graph_policy --train-jsonl demos.jsonl --out-dir outputs/graph_policy
+python -m obstruction_train.online_replan --observations-jsonl observations.jsonl --checkpoint outputs/graph_policy/best.pt --out outputs/replan_history.json
+```
+
+`online_replan` writes a new ranking for every observation and preserves the
+previous grasp outcome. A robot bridge should collect calibrated RGB-D, run
+perception, execute its safety-checked grasp controller, then append the next
+observation; it must not execute the policy score directly as a robot trajectory.

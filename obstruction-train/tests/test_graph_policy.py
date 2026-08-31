@@ -31,4 +31,26 @@ def test_graph_adapter_encodes_target_and_direct_blocker():
     )
     assert ids == [1, 2]
     assert nodes[1, 8] == 1 and nodes[0, 9] == 1
-    assert torch.allclose(edges[0, 1], torch.tensor([1.0, 0.7, 0.4, 0.0]))
+    assert torch.allclose(edges[0, 1, :4], torch.tensor([1.0, 0.7, 0.4, 0.0]))
+    assert torch.allclose(edges[0, 1, 4:], torch.zeros(3))
+
+
+def test_hash_task_encoder_is_batched_and_trainable():
+    from obstruction_train.task_text_encoder import HashTaskEncoder
+
+    encoder = HashTaskEncoder(embedding_dim=16, num_buckets=128)
+    vectors = encoder(["grasp the red cup", "clear table", "grasp the red cup"])
+    assert vectors.shape == (3, 16)
+    assert torch.allclose(vectors[0], vectors[2])
+    vectors.sum().backward()
+    assert encoder.embedding.weight.grad is not None
+
+
+def test_graph_adapter_encodes_support_relation():
+    from obstruction_train.plan_graph_policy import build_graph
+
+    _, _, edges = build_graph(
+        [{"id": 1, "bbox": [0, 0, 10, 10]}, {"id": 2, "bbox": [0, 10, 10, 20]}],
+        [{"source": 1, "target": 2, "relation_type": "support", "confidence": 0.8}],
+    )
+    assert edges[0, 1, 4] == 0.8
