@@ -165,3 +165,23 @@ python -m obstruction_train.online_replan --observations-jsonl observations.json
 previous grasp outcome. A robot bridge should collect calibrated RGB-D, run
 perception, execute its safety-checked grasp controller, then append the next
 observation; it must not execute the policy score directly as a robot trajectory.
+
+## Controlled Ablations
+
+Run all variants with the same JSONL split, seed, model shape, and training
+budget. Each variant saves `metrics.json` beside its checkpoint:
+
+```bash
+python -m obstruction_train.run_graph_policy_ablations \
+  --train-jsonl demos/train.jsonl \
+  --val-jsonl demos/val.jsonl \
+  --out-dir outputs/graph_policy_ablations \
+  --epochs 20 --seed 0 --device cuda
+```
+
+The matrix reports full context, no language, no obstruction edges, no support
+edges, and no nearby edges. Compare `top1_accuracy`,
+`mean_reciprocal_rank`, and `equivalent_action_top1`. The optional
+`equivalent_action_ids` field records multiple equally valid next actions; an
+optional `grasp_succeeded` field gives the observed execution success rate.
+Repeat each variant over at least three seeds before reporting a result.

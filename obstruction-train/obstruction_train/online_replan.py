@@ -12,10 +12,10 @@ def load_snapshots(path):
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def plan_snapshot(snapshot, model, encoder, device):
+def plan_snapshot(snapshot, model, encoder, graph_features, device):
     task_mode = snapshot["task_mode"]
     target_id = snapshot.get("target_id")
-    object_ids, nodes, edges = build_graph(snapshot["objects"], snapshot.get("relations", []), target_id)
+    object_ids, nodes, edges = build_graph(snapshot["objects"], snapshot.get("relations", []), target_id, features=graph_features)
     task = model.TASK_TARGET if task_mode == "target" else model.TASK_CLEAR_TABLE
     target_mask = torch.tensor([object_id == target_id for object_id in object_ids], device=device)[None]
     task_features = encoder([snapshot.get("instruction", "")]) if encoder else None
@@ -33,10 +33,10 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
-    model, encoder = load_policy(args.checkpoint, args.device)
+    model, encoder, graph_features = load_policy(args.checkpoint, args.device)
     history = []
     for step, snapshot in enumerate(load_snapshots(args.observations_jsonl)):
-        ranked_actions = plan_snapshot(snapshot, model, encoder, args.device)
+        ranked_actions = plan_snapshot(snapshot, model, encoder, graph_features, args.device)
         history.append({"step": step, "observation_id": snapshot.get("observation_id", step), "previous_grasp_succeeded": snapshot.get("grasp_succeeded"), "ranked_actions": ranked_actions, "selected_action": ranked_actions[0] if ranked_actions else None})
     result = {"controller": "online_graph_policy_replanner", "steps": history}
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)

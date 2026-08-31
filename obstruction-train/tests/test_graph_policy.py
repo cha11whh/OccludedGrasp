@@ -54,3 +54,12 @@ def test_graph_adapter_encodes_support_relation():
         [{"source": 1, "target": 2, "relation_type": "support", "confidence": 0.8}],
     )
     assert edges[0, 1, 4] == 0.8
+
+
+def test_graph_ablation_disables_requested_relation_families():
+    from obstruction_train.plan_graph_policy import build_graph
+
+    objects = [{"id": 1, "bbox": [0, 0, 10, 10]}, {"id": 2, "bbox": [5, 0, 15, 10]}]
+    relations = [{"blocker": 1, "blocked": 2, "confidence": 0.8}, {"source": 1, "target": 2, "relation_type": "support", "confidence": 0.7}]
+    _, _, edges = build_graph(objects, relations, features={"obstruction": False, "support": False, "nearby": False})
+    assert torch.count_nonzero(edges) == 0

@@ -1,3 +1,4 @@
+import hashlib
 import re
 
 import torch
@@ -18,7 +19,7 @@ class HashTaskEncoder(nn.Module):
         offsets = [0]
         for instruction in instructions:
             tokens = re.findall(r"[\w]+", instruction.lower(), flags=re.UNICODE) or ["<empty>"]
-            values.extend(hash(token) % self.num_buckets for token in tokens)
+            values.extend(int.from_bytes(hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest(), "little") % self.num_buckets for token in tokens)
             offsets.append(len(values))
         return torch.tensor(values, dtype=torch.long, device=device), torch.tensor(offsets[:-1], dtype=torch.long, device=device)
 

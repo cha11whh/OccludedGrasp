@@ -28,7 +28,8 @@ def _overlap_or_proximity(first, second):
     return intersection / union
 
 
-def build_graph(objects, relations, target_id=None, near_iou=0.02):
+def build_graph(objects, relations, target_id=None, near_iou=0.02, features=None):
+    features = {"obstruction": True, "support": True, "nearby": True} if features is None else features
     object_ids = [int(obj["id"]) for obj in objects]
     if len(object_ids) != len(set(object_ids)):
         raise ValueError("object IDs must be unique")
@@ -49,19 +50,20 @@ def build_graph(objects, relations, target_id=None, near_iou=0.02):
         relation_type = str(relation.get("relation_type", relation.get("type", "obstruction"))).lower()
         confidence = float(relation.get("confidence", relation.get("relation_confidence", 0.0)))
         if relation_type in {"support", "supporting", "supported_by"}:
-            edges[source, destination, 4] = max(edges[source, destination, 4], confidence or 1.0)
-        else:
+            if features.get("support", True):
+                edges[source, destination, 4] = max(edges[source, destination, 4], confidence or 1.0)
+        elif features.get("obstruction", True):
             ratio = float(relation.get("mask_ratio", 0.0))
             depth = float(relation.get("edge_features", {}).get("depth_order_score", 0.0))
             edges[source, destination, :4] = torch.tensor([1.0, confidence, ratio, depth])
-        nodes[source, 7] += 1
-        nodes[destination, 6] += 1
+            nodes[source, 7] += 1
+            nodes[destination, 6] += 1
     for source, first in enumerate(objects):
         for destination, second in enumerate(objects):
             if source == destination:
                 continue
             iou = _overlap_or_proximity(first, second)
-            if iou >= near_iou:
+            if features.get("nearby", True) and iou >= near_iou:
                 edges[source, destination, 5:] = torch.tensor([1.0, iou])
     for offset, object_id in enumerate(object_ids):
         nodes[offset, 8] = float(object_id == target_id)
@@ -80,7 +82,7 @@ def load_policy(checkpoint_path, device):
         encoder.load_state_dict(checkpoint["text_encoder"])
         encoder.eval()
     model.eval()
-    return model, encoder
+    return model, encoder, checkpoint.get("graph_features", {"obstruction": True, "support": True, "nearby": True})
 
 
 def main():
@@ -100,8 +102,8 @@ def main():
         objects = _records(json.load(handle), "objects")
     with open(args.relations, encoding="utf-8") as handle:
         relations = _records(json.load(handle), "relations")
-    object_ids, nodes, edges = build_graph(objects, relations, args.target_id)
-    model, encoder = load_policy(args.checkpoint, args.device)
+    model, encoder, graph_features = load_policy(args.checkpoint, args.device)
+    object_ids, nodes, edges = build_graph(objects, relations, args.target_id, features=graph_features)
     task = model.TASK_TARGET if args.task_mode == "target" else model.TASK_CLEAR_TABLE
     targets = torch.tensor([object_id == args.target_id for object_id in object_ids], device=args.device)[None]
     task_features = encoder([args.instruction]) if encoder else None
