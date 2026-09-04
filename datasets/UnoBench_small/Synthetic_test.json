@@ -1,0 +1,332 @@
+{
+  "0": {
+    "test_index": 0,
+    "image_path": "images/image_017512.png",
+    "som_image_path": "images_som/image_017512.png",
+    "image_id": 17512,
+    "query_object": {
+      "obj_id": 2,
+      "object_name": "gray rectangular box"
+    },
+    "target_objects": [
+      {
+        "obj_id": 3,
+        "object_name": "white rolled bag"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        3,
+        4,
+        2
+      ]
+    ],
+    "difficulty": "Medium",
+    "k_min": 2,
+    "num_paths": 1,
+    "only_som": 0
+  },
+  "1": {
+    "test_index": 1,
+    "image_path": "images/image_017512.png",
+    "som_image_path": "images_som/image_017512.png",
+    "image_id": 17512,
+    "query_object": {
+      "obj_id": 4,
+      "object_name": "white bottle with blue label"
+    },
+    "target_objects": [
+      {
+        "obj_id": 3,
+        "object_name": "white rolled bag"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        3,
+        4
+      ]
+    ],
+    "difficulty": "Easy",
+    "k_min": 1,
+    "num_paths": 1,
+    "only_som": 0
+  },
+  "2": {
+    "test_index": 2,
+    "image_path": "images/image_017513.png",
+    "som_image_path": "images_som/image_017513.png",
+    "image_id": 17513,
+    "query_object": {
+      "obj_id": 1,
+      "object_name": "red snack can"
+    },
+    "target_objects": [
+      {
+        "obj_id": 3,
+        "object_name": "left white bottle"
+      },
+      {
+        "obj_id": 5,
+        "object_name": "top white bottle"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        3,
+        1
+      ]
+    ],
+    "difficulty": "Easy",
+    "k_min": 1,
+    "num_paths": 1,
+    "only_som": 0
+  },
+  "3": {
+    "test_index": 3,
+    "image_path": "images/image_017514.png",
+    "som_image_path": "images_som/image_017514.png",
+    "image_id": 17514,
+    "query_object": {
+      "obj_id": 1,
+      "object_name": "red snack can"
+    },
+    "target_objects": [
+      {
+        "obj_id": 5,
+        "object_name": "angled spray bottle"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        5,
+        1
+      ]
+    ],
+    "difficulty": "Easy",
+    "k_min": 1,
+    "num_paths": 1,
+    "only_som": 0
+  },
+  "4": {
+    "test_index": 4,
+    "image_path": "images/image_017514.png",
+    "som_image_path": "images_som/image_017514.png",
+    "image_id": 17514,
+    "query_object": {
+      "obj_id": 2,
+      "object_name": "blue and white box"
+    },
+    "target_objects": [
+      {
+        "obj_id": 3,
+        "object_name": "rolled plastic bags"
+      },
+      {
+        "obj_id": 5,
+        "object_name": "angled spray bottle"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        3,
+        4,
+        2
+      ]
+    ],
+    "difficulty": "Medium",
+    "k_min": 2,
+    "num_paths": 1,
+    "only_som": 0
+  },
+  "5": {
+    "test_index": 5,
+    "image_path": "images/image_017514.png",
+    "som_image_path": "images_som/image_017514.png",
+    "image_id": 17514,
+    "query_object": {
+      "obj_id": 4,
+      "object_name": "tall spray bottle"
+    },
+    "target_objects": [
+      {
+        "obj_id": 3,
+        "object_name": "rolled plastic bags"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        3,
+        4
+      ]
+    ],
+    "difficulty": "Easy",
+    "k_min": 1,
+    "num_paths": 1,
+    "only_som": 0
+  },
+  "6": {
+    "test_index": 6,
+    "image_path": "images/image_017515.png",
+    "som_image_path": "images_som/image_017515.png",
+    "image_id": 17515,
+    "query_object": {
+      "obj_id": 2,
+      "object_name": "sealed cardboard package"
+    },
+    "target_objects": [
+      {
+        "obj_id": 4,
+        "object_name": "tall clear bottle"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        4,
+        2
+      ]
+    ],
+    "difficulty": "Easy",
+    "k_min": 1,
+    "num_paths": 1,
+    "only_som": 0
+  },
+  "7": {
+    "test_index": 7,
+    "image_path": "images/image_017516.png",
+    "som_image_path": "images_som/image_017516.png",
+    "image_id": 17516,
+    "query_object": {
+      "obj_id": 3,
+      "object_name": "right packaging"
+    },
+    "target_objects": [
+      {
+        "obj_id": 5,
+        "object_name": "top right tube"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        5,
+        3
+      ]
+    ],
+    "difficulty": "Easy",
+    "k_min": 1,
+    "num_paths": 1,
+    "only_som": 0
+  },
+  "8": {
+    "test_index": 8,
+    "image_path": "images/image_017516.png",
+    "som_image_path": "images_som/image_017516.png",
+    "image_id": 17516,
+    "query_object": {
+      "obj_id": 4,
+      "object_name": "bottom bag roll"
+    },
+    "target_objects": [
+      {
+        "obj_id": 5,
+        "object_name": "top right tube"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        5,
+        4
+      ]
+    ],
+    "difficulty": "Easy",
+    "k_min": 1,
+    "num_paths": 1,
+    "only_som": 0
+  },
+  "9": {
+    "test_index": 9,
+    "image_path": "images/image_017517.png",
+    "som_image_path": "images_som/image_017517.png",
+    "image_id": 17517,
+    "query_object": {
+      "obj_id": 2,
+      "object_name": "red can"
+    },
+    "target_objects": [
+      {
+        "obj_id": 6,
+        "object_name": "spray bottle on center"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        6,
+        2
+      ]
+    ],
+    "difficulty": "Easy",
+    "k_min": 1,
+    "num_paths": 1,
+    "only_som": 0
+  },
+    "70": {
+    "test_index": 70,
+    "image_path": "images/image_017549.png",
+    "som_image_path": "images_som/image_017549.png",
+    "image_id": 17549,
+    "query_object": {
+      "obj_id": 1,
+      "object_name": "blue toy block"
+    },
+    "target_objects": [
+      {
+        "obj_id": 3,
+        "object_name": "bottom package"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        3,
+        2,
+        4,
+        5,
+        1
+      ],
+      [
+        3,
+        4,
+        5,
+        1
+      ]
+    ],
+    "difficulty": "Hard",
+    "k_min": 3,
+    "num_paths": 2,
+    "only_som": 0
+  },
+    "6863": {
+    "test_index": 6863,
+    "image_path": "images/image_020635.png",
+    "som_image_path": "images_som/image_020635.png",
+    "image_id": 20635,
+    "query_object": {
+      "obj_id": 1,
+      "object_name": "yellow bottle"
+    },
+    "target_objects": [
+      {
+        "obj_id": 1,
+        "object_name": "yellow bottle"
+      }
+    ],
+    "occlusion_paths": [
+      [
+        1
+      ]
+    ],
+    "difficulty": "No-Occ",
+    "k_min": 0,
+    "num_paths": 1,
+    "only_som": 0
+  }
+}
