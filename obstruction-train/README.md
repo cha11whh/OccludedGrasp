@@ -185,3 +185,7 @@ edges, and no nearby edges. Compare `top1_accuracy`,
 `equivalent_action_ids` field records multiple equally valid next actions; an
 optional `grasp_succeeded` field gives the observed execution success rate.
 Repeat each variant over at least three seeds before reporting a result.
+
+
+### Graph policy consistency preprocessing
+Graph-policy training and inference repair obstruction relation cycles by default. Checkpoints store these preprocessing settings so loading remains consistent; use `--min-relation-confidence` to filter low-confidence relations, or `--disable-graph-repair` for an ablation without consistency repair.

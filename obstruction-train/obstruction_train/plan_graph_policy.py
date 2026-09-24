@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 
+from .graph_consistency import repair_obstruction_relations
 from .graph_policy import TaskConditionedGraphPolicy
 from .task_text_encoder import HashTaskEncoder
 
@@ -28,8 +29,10 @@ def _overlap_or_proximity(first, second):
     return intersection / union
 
 
-def build_graph(objects, relations, target_id=None, near_iou=0.02, features=None):
+def build_graph(objects, relations, target_id=None, near_iou=0.02, features=None, repair_graph=True, min_relation_confidence=0.0):
     features = {"obstruction": True, "support": True, "nearby": True} if features is None else features
+    if repair_graph:
+        relations, _ = repair_obstruction_relations(relations, min_confidence=min_relation_confidence)
     object_ids = [int(obj["id"]) for obj in objects]
     if len(object_ids) != len(set(object_ids)):
         raise ValueError("object IDs must be unique")
@@ -82,7 +85,10 @@ def load_policy(checkpoint_path, device):
         encoder.load_state_dict(checkpoint["text_encoder"])
         encoder.eval()
     model.eval()
-    return model, encoder, checkpoint.get("graph_features", {"obstruction": True, "support": True, "nearby": True})
+    graph_features = checkpoint.get("graph_features", {"obstruction": True, "support": True, "nearby": True})
+    graph_preprocessing = {"repair_graph": True, "min_relation_confidence": 0.0}
+    graph_preprocessing.update(checkpoint.get("graph_preprocessing", {}))
+    return model, encoder, graph_features, graph_preprocessing
 
 
 def main():
@@ -102,8 +108,8 @@ def main():
         objects = _records(json.load(handle), "objects")
     with open(args.relations, encoding="utf-8") as handle:
         relations = _records(json.load(handle), "relations")
-    model, encoder, graph_features = load_policy(args.checkpoint, args.device)
-    object_ids, nodes, edges = build_graph(objects, relations, args.target_id, features=graph_features)
+    model, encoder, graph_features, graph_preprocessing = load_policy(args.checkpoint, args.device)
+    object_ids, nodes, edges = build_graph(objects, relations, args.target_id, features=graph_features, **graph_preprocessing)
     task = model.TASK_TARGET if args.task_mode == "target" else model.TASK_CLEAR_TABLE
     targets = torch.tensor([object_id == args.target_id for object_id in object_ids], device=args.device)[None]
     task_features = encoder([args.instruction]) if encoder else None

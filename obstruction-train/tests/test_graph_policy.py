@@ -63,3 +63,53 @@ def test_graph_ablation_disables_requested_relation_families():
     relations = [{"blocker": 1, "blocked": 2, "confidence": 0.8}, {"source": 1, "target": 2, "relation_type": "support", "confidence": 0.7}]
     _, _, edges = build_graph(objects, relations, features={"obstruction": False, "support": False, "nearby": False})
     assert torch.count_nonzero(edges) == 0
+
+
+def test_graph_consistency_removes_weakest_cycle_edge():
+    from obstruction_train.graph_consistency import repair_obstruction_relations
+
+    relations = [
+        {"blocker": 1, "blocked": 2, "confidence": 0.9},
+        {"blocker": 2, "blocked": 3, "confidence": 0.8},
+        {"blocker": 3, "blocked": 1, "confidence": 0.2},
+    ]
+
+    repaired, report = repair_obstruction_relations(relations)
+
+    assert [(row["blocker"], row["blocked"]) for row in repaired] == [(1, 2), (2, 3)]
+    assert report["removed_cycles"] == [{"blocker": 3, "blocked": 1, "confidence": 0.2}]
+    assert report["is_acyclic"] is True
+
+def test_build_graph_optionally_repairs_obstruction_cycles():
+    from obstruction_train.plan_graph_policy import build_graph
+
+    objects = [
+        {"id": 1, "bbox": [0, 0, 10, 10]},
+        {"id": 2, "bbox": [20, 0, 30, 10]},
+        {"id": 3, "bbox": [40, 0, 50, 10]},
+    ]
+    relations = [
+        {"blocker": 1, "blocked": 2, "confidence": 0.9},
+        {"blocker": 2, "blocked": 3, "confidence": 0.8},
+        {"blocker": 3, "blocked": 1, "confidence": 0.2},
+    ]
+
+    _, _, repaired_edges = build_graph(
+        objects,
+        relations,
+        repair_graph=True,
+        min_relation_confidence=0.0,
+    )
+    assert repaired_edges[0, 1, 0] == 1
+    assert repaired_edges[1, 2, 0] == 1
+    assert repaired_edges[2, 0, 0] == 0
+
+    _, _, unrepaired_edges = build_graph(
+        objects,
+        relations,
+        repair_graph=False,
+        min_relation_confidence=0.0,
+    )
+    assert unrepaired_edges[0, 1, 0] == 1
+    assert unrepaired_edges[1, 2, 0] == 1
+    assert unrepaired_edges[2, 0, 0] == 1

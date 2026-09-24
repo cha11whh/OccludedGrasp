@@ -13,7 +13,7 @@ def load_records(path):
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def evaluate(records, model, encoder, graph_features, device):
+def evaluate(records, model, encoder, graph_features, device, graph_preprocessing=None):
     top1 = 0
     reciprocal_rank = 0.0
     equivalent_hit = 0
@@ -42,8 +42,8 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
-    model, encoder, graph_features = load_policy(args.checkpoint, args.device)
-    metrics = evaluate(load_records(args.jsonl), model, encoder, graph_features, args.device)
+    model, encoder, graph_features, graph_preprocessing = load_policy(args.checkpoint, args.device)
+    metrics = evaluate(load_records(args.jsonl), model, encoder, graph_features, args.device, graph_preprocessing)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2, ensure_ascii=False)
