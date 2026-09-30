@@ -87,6 +87,29 @@ By default, checkpoints are automatically downloaded from `gs://openpi-assets` a
 
 
 ## Running Inference for a Pre-Trained Model
+### OccludedGrasp to Pi05 smoke bridge
+
+The dependency-light `occluded_grasp_adapter` converts ranked-actions JSON, RGB images, and an 8D Panda state into the Pi05-DROID observation contract. Pi05 output is executed as seven unnormalized Panda joint velocities at 15 Hz plus one gripper-position command; a bounded position-target integrator provides the Isaac safety layer.
+
+Configure local dependencies without editing source paths:
+
+```bash
+export OPENPI_MODEL_PYTHON=/path/to/openpi/.venv/bin/python
+export PI05_CHECKPOINT=/path/to/pi05_droid_checkpoint
+export OCCLUDED_GRASP_MODEL_ROOT=/path/to/obstruction-model-repo
+export OCCLUDED_GRASP_CHECKPOINT=/path/to/best.pt
+```
+
+Run the same-scene RGB-D -> obstruction ranking -> Pi05 -> action -> re-observation loop with Isaac Lab Python:
+
+```bash
+$ISAAC_PYTHON scripts/isaac_occluded_grasp_feedback_loop.py \
+  --headless --enable_cameras --out-dir /tmp/occluded-grasp-pi05 \
+  --cycles 4 --control-source pi05 --pi05-actions-per-cycle 1
+```
+
+Use `--control-source visual_ik` for the geometric-controller comparison. The loop stores per-cycle inputs, action chunks, execution logs, safety clipping, object motion, and aggregate evaluation metrics under `--out-dir`.
+
 
 Our pre-trained model checkpoints can be run with a few lines of code (here our $\pi_0$-FAST-DROID model):
 ```python
