@@ -28,6 +28,10 @@ parser.add_argument("--grasp-palm-offset", type=float, default=0.14)
 parser.add_argument("--grasp-y-offset", type=float, default=0.0)
 parser.add_argument("--control-source", choices=("pi05", "visual_ik"), default="pi05")
 parser.add_argument("--pi05-actions-per-cycle", type=int, default=2)
+parser.add_argument("--pi05-execution-mode", choices=("physics", "kinematic_proxy"), default="physics",
+                    help="Use physics stepping or a fast kinematic state update for software-chain tests.")
+parser.add_argument("--proxy-relocate-selected", action="store_true",
+                    help="Kinematic-proxy test only: relocate the selected object after its Pi05 action; not a grasp.")
 parser.add_argument("--pi05-max-joint-velocity", type=float, default=0.3)
 parser.add_argument("--pi05-gripper-one-is-open", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--success-lift-threshold", type=float, default=0.06)
@@ -53,6 +57,8 @@ AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 if min(args.cycles, args.ik_steps_per_waypoint, args.gripper_close_steps, args.width, args.height, args.pi05_actions_per_cycle) <= 0 or min(args.grasp_approach_distance, args.grasp_lift_height, args.grasp_palm_offset, args.success_lift_threshold, args.pi05_max_joint_velocity) <= 0 or args.warmup_steps < 0:
     parser.error("cycle/IK/close/image settings and grasp distances must be positive; warmup must be non-negative")
+if args.proxy_relocate_selected and args.pi05_execution_mode != "kinematic_proxy":
+    parser.error("--proxy-relocate-selected requires --pi05-execution-mode kinematic_proxy")
 if not args.skip_model_inference:
     required_paths = {
         "--model-python/OPENPI_MODEL_PYTHON": args.model_python,
@@ -190,7 +196,8 @@ def pixel_to_world_grasp_point(camera, cycle_dir, labels, object_name):
                                               "world_surface_point_xyz_m": point_world[0].cpu().tolist()}
 
 
-def execute_pi05_action_chunk(sim, robot, clutter_assets, actions, arm_ids, finger_ids, joint_limits):
+def execute_pi05_action_chunk(sim, robot, clutter_assets, actions, arm_ids, finger_ids, joint_limits,
+                              selected_name=None):
     """Execute unnormalized Pi05-DROID joint velocities at the dataset control rate."""
     actions = np.asarray(actions, dtype=np.float32)
     if actions.ndim != 2 or actions.shape[1] != 8 or not np.isfinite(actions).all():
@@ -210,12 +217,22 @@ def execute_pi05_action_chunk(sim, robot, clutter_assets, actions, arm_ids, fing
         fingers = torch.full((1, len(finger_ids)), gripper_target, dtype=torch.float32, device=robot.device)
         robot.set_joint_position_target(target, joint_ids=arm_ids)
         robot.set_joint_position_target(fingers, joint_ids=finger_ids)
-        for _ in range(physics_steps):
+        if args.pi05_execution_mode == "physics":
+            for _ in range(physics_steps):
+                robot.write_data_to_sim()
+                sim.step(render=False)
+                robot.update(sim.get_physics_dt())
+                for asset in clutter_assets.values():
+                    asset.update(sim.get_physics_dt())
+        else:
+            # Fast integration test: apply the same bounded DROID target directly,
+            # without spending wall time on multiple PhysX substeps per action.
+            robot.set_joint_position_target(target, joint_ids=arm_ids)
+            robot.set_joint_position_target(fingers, joint_ids=finger_ids)
             robot.write_data_to_sim()
-            sim.step(render=False)
+            robot.write_joint_state_to_sim(target, torch.zeros_like(target), joint_ids=arm_ids)
+            robot.write_joint_state_to_sim(fingers, torch.zeros_like(fingers), joint_ids=finger_ids)
             robot.update(sim.get_physics_dt())
-            for asset in clutter_assets.values():
-                asset.update(sim.get_physics_dt())
         velocity_clipped_mask = (np.abs(action[:7]) > args.pi05_max_joint_velocity)
         execution_log.append({
             "chunk_index": action_index,
@@ -226,13 +243,27 @@ def execute_pi05_action_chunk(sim, robot, clutter_assets, actions, arm_ids, fing
             "target_joint_position": target_np.tolist(),
             "measured_joint_position": robot.data.joint_pos[0, arm_ids].detach().cpu().tolist(),
             "gripper_target_m": gripper_target,
-            "physics_steps": physics_steps,
+            "physics_steps": physics_steps if args.pi05_execution_mode == "physics" else 0,
+            "execution_mode": args.pi05_execution_mode,
         })
+    relocated = False
+    if args.proxy_relocate_selected:
+        if selected_name not in clutter_assets:
+            raise ValueError(f"cannot proxy-relocate unknown selected object {selected_name!r}")
+        asset = clutter_assets[selected_name]
+        root_state = asset.data.root_state_w[0].clone()
+        root_state[0] += 2.0  # move it outside the cabinet camera frustum
+        root_state[7:] = 0.0
+        asset.write_root_state_to_sim(root_state[None, :])
+        relocated = True
     return {
         "control_frequency_hz": DROID_CONTROL_FREQUENCY_HZ,
         "actions_executed": action_count,
         "max_joint_velocity": args.pi05_max_joint_velocity,
         "gripper_one_is_open": args.pi05_gripper_one_is_open,
+        "execution_mode": args.pi05_execution_mode,
+        "proxy_relocated_selected_object": relocated,
+        "proxy_transition_is_not_grasp": relocated,
         "action_log": execution_log,
     }
 
@@ -612,7 +643,8 @@ def main():
         grasp_result = None
         if args.control_source == "pi05":
             pi05_execution = execute_pi05_action_chunk(
-                sim, robot, clutter, action_chunk, arm_ids, finger_ids, limits
+                sim, robot, clutter, action_chunk, arm_ids, finger_ids, limits,
+                selected_name=selected_name,
             )
         else:
             grasp_result = execute_visual_grasp(sim, robot, camera, clutter, controller, arm_ids,
@@ -645,7 +677,8 @@ def main():
             selected_position = torch.as_tensor(after[selected_name], device=robot.device)
             hand_position = robot.data.body_pos_w[0, ee_body_id]
             object_to_hand = float(torch.linalg.vector_norm(selected_position - hand_position).item())
-            grasp_success = selected_lift >= args.success_lift_threshold and object_to_hand <= 0.20
+            grasp_success = (args.pi05_execution_mode == "physics"
+                             and selected_lift >= args.success_lift_threshold and object_to_hand <= 0.20)
             pi05_execution["selected_object_vertical_displacement_m"] = selected_lift
             pi05_execution["selected_object_to_hand_after_m"] = object_to_hand
         record = {"cycle": cycle, "selected": selected, "ranked_actions": ranked["ranked_actions"],

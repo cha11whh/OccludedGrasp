@@ -121,6 +121,63 @@ uv run python scripts/export_occluded_grasp_expert_episode.py \
 
 The expert recorder is experimental and must be runtime-validated in Isaac before collecting a training set.
 
+#### Fast end-to-end software-chain smoke
+
+For a quick integration check that avoids slow physics substeps, use the explicit kinematic proxy mode below. It runs the learned obstruction ranker and base Pi05 checkpoint on every cycle, applies a bounded Pi05 joint target, and then uses an **oracle simulator relocation** to remove the selected proxy object so the next cycle must re-observe and re-rank. The relocation is only a software-chain test; it is not a grasp and is never counted as success.
+
+```bash
+cd /home/media/zy/IsaacLab
+CONDA_PREFIX=/home/media/miniforge3/envs/isaaclab \
+PATH=/home/media/miniforge3/envs/isaaclab/bin:$PATH \
+./isaaclab.sh -p /home/media/zy/pi_work/openpi_official/scripts/isaac_occluded_grasp_feedback_loop.py \
+    --headless --enable_cameras --out-dir /tmp/occluded_grasp_fast_full_chain \
+    --cycles 2 --target BlueBoxProxy --control-source pi05 \
+    --pi05-actions-per-cycle 1 --pi05-execution-mode kinematic_proxy \
+    --proxy-relocate-selected --warmup-steps 1 --width 160 --height 120 \
+    --model-python /home/media/zy/eventvla_openpi/.venv/bin/python \
+    --pi05-checkpoint /home/media/zy/eventvla_openpi/assets/pi05_base \
+    --relation-checkpoint /home/media/zy/OccludedGrasp/obstruction-train/outputs/pair_transformer_unobench/best.pt \
+    --relation-model-root /home/media/zy/OccludedGrasp/obstruction-train
+```
+
+The validated two-cycle run selected `RedBoxProxy` as the blocker of `BlueBoxProxy`, relocated it in the proxy-only transition, then re-observed and selected `BlueBoxProxy` on the next cycle. `feedback_summary.json` and per-cycle JSON retain `grasp_success: false` to avoid mislabeling this oracle transition. Omit `--pi05-execution-mode kinematic_proxy --proxy-relocate-selected` to use the slower physical action executor; that mode has not yet completed this two-cycle smoke.
+
+#### Fine-tuning after collecting real simulator demonstrations
+
+For the obstruction model, `obstruction_train.export_isaac_proxy_pairs` converts multiple feedback-loop RGB-D/instance-segmentation captures to the pair trainer's ZIP + JSONL format. Its labels are only an approximate simulator rule (projected bounding-box overlap + depth ordering), not ground truth; the exporter refuses a NONE-only set. Collect many varied layouts with positive and negative relations before training:
+
+```bash
+cd /home/media/zy/OccludedGrasp/obstruction-train
+PYTHONPATH=. /home/media/zy/eventvla_openpi/.venv/bin/python -m obstruction_train.export_isaac_proxy_pairs \
+    --capture-root /path/to/varied_isaac_capture_runs \
+    --out-root /path/to/isaac_occlusion_pairs
+PYTHONPATH=. /home/media/zy/eventvla_openpi/.venv/bin/python -m obstruction_train.train_pair_transformer \
+    --unobench-root /path/to/isaac_occlusion_pairs \
+    --train-jsonl /path/to/isaac_occlusion_pairs/train_pairs.jsonl \
+    --val-jsonl /path/to/isaac_occlusion_pairs/val_pairs.jsonl \
+    --out-dir outputs/pair_transformer_isaac_ft \
+    --model pair_transformer_base \
+    --resume outputs/pair_transformer_unobench/best.pt \
+    --reset-optimizer --reset-best --epochs 5 --batch-size 32 --lr 1e-5 --device cuda
+```
+
+For Pi05, first collect episodes with `--record-expert --control-source visual_ik` and keep only generated manifests with `success: true`; do not use `--proxy-relocate-selected` episodes as grasp demonstrations. Each valid manifest should contain at least one 16-step action horizon and the same prompt/task that the behavior executes. Export into the local LeRobot cache, then fine-tune from the available local Pi05 parameters while reusing DROID normalization statistics:
+
+```bash
+export HF_LEROBOT_HOME=/path/to/lerobot_data
+/home/media/zy/eventvla_openpi/.venv/bin/python scripts/export_occluded_grasp_expert_episode.py \
+    --manifest /path/to/successful/expert_episode_manifest.json \
+    --repo-id my-org/occluded-grasp-sim --output-root "$HF_LEROBOT_HOME/my-org/occluded-grasp-sim"
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 /home/media/zy/eventvla_openpi/.venv/bin/python scripts/train.py pi05_droid_finetune \
+    --exp-name=occluded-grasp-sim-ft --data.repo-id=my-org/occluded-grasp-sim \
+    --data.assets.assets-dir=/home/media/zy/eventvla_openpi/assets/pi05_base/assets \
+    --data.assets.asset-id=droid \
+    --weight-loader.params-path=/home/media/zy/eventvla_openpi/assets/pi05_base/params \
+    --num-train-steps=1000 --batch-size=4 --num-workers=0 --overwrite --no-wandb-enabled
+```
+
+The current two-cycle smoke is sufficient to validate the inference/re-observation interfaces, but its proxy labels and expert samples are not a usable training corpus. Do not start either fine-tuning command until the corresponding dataset contains enough varied, correctly labeled examples.
+
 
 Our pre-trained model checkpoints can be run with a few lines of code (here our $\pi_0$-FAST-DROID model):
 ```python
