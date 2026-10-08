@@ -36,6 +36,7 @@ parser.add_argument("--width", type=int, default=320)
 parser.add_argument("--height", type=int, default=240)
 parser.add_argument("--warmup-steps", type=int, default=12)
 parser.add_argument("--debug-control", action="store_true")
+parser.add_argument("--record-expert", action="store_true", help="Record 15-Hz visual_ik demonstrations; export only episodes that pass grasp success checks.")
 parser.add_argument("--skip-model-inference", action="store_true")
 parser.add_argument("--grasp-point-source", choices=("visual", "oracle_xy", "oracle_xyz"), default="visual")
 parser.add_argument("--grasp-orientation", choices=("top_down", "current"), default="top_down")
@@ -236,8 +237,9 @@ def execute_pi05_action_chunk(sim, robot, clutter_assets, actions, arm_ids, fing
     }
 
 
-def move_ee_to(sim, robot, camera, clutter_assets, controller, arm_ids, ee_body_id, jacobian_body_id,
-               target_position_w, target_quaternion_w, joint_limits, finger_ids, gripper_target_m, steps):
+def move_ee_to(sim, robot, camera, wrist_camera, clutter_assets, controller, arm_ids, ee_body_id, jacobian_body_id,
+               target_position_w, target_quaternion_w, joint_limits, finger_ids, gripper_target_m, steps,
+               expert_samples=None, expert_frame_dir=None):
     """Move Panda hand to a world-frame pose using frame-consistent DLS differential IK."""
     if args.debug_control:
         print("[control-debug] move_ee_to entered", flush=True)
@@ -262,8 +264,23 @@ def move_ee_to(sim, robot, camera, clutter_assets, controller, arm_ids, ee_body_
         print("[control-debug] move after start pose cpu sync", flush=True)
     target_position_w_list = target_position_w.detach().cpu().tolist()
     last_position_error = float("inf")
+    physics_steps_per_dataset_frame = max(1, round(1.0 / (DROID_CONTROL_FREQUENCY_HZ * sim.get_physics_dt())))
     for step_index in range(steps):
         debug_step = args.debug_control and step_index == 0
+        sample_boundary = (expert_samples is not None and expert_frame_dir is not None
+                           and step_index % physics_steps_per_dataset_frame == 0
+                           and step_index + physics_steps_per_dataset_frame <= steps)
+        if sample_boundary:
+            segment_start_q = robot.data.joint_pos[0, arm_ids].detach().cpu().numpy().copy()
+            finger_state = float(torch.clamp(robot.data.joint_pos[0, finger_ids].mean() / 0.04, 0.0, 1.0).item())
+            external_image = camera.data.output["rgb"][0].detach().cpu().numpy()
+            wrist_image = wrist_camera.data.output["rgb"][0].detach().cpu().numpy()
+            frame_id = len(expert_samples)
+            external_rel = Path("expert_frames") / f"{frame_id:06d}_external.png"
+            wrist_rel = Path("expert_frames") / f"{frame_id:06d}_wrist.png"
+            expert_frame_dir.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(external_image).save(expert_frame_dir.parent / external_rel)
+            Image.fromarray(wrist_image).save(expert_frame_dir.parent / wrist_rel)
         if debug_step:
             print("[control-debug] before jacobian", flush=True)
         # PhysX Jacobians are world-frame; convert both linear/angular rows to robot-root frame,
@@ -295,7 +312,11 @@ def move_ee_to(sim, robot, camera, clutter_assets, controller, arm_ids, ee_body_
         if debug_step:
             print("[control-debug] before sim.step", flush=True)
             step_started = time.perf_counter()
-        sim.step(render=False)
+        render_expert_frame = (expert_samples is not None and (step_index + 1) % physics_steps_per_dataset_frame == 0)
+        sim.step(render=render_expert_frame)
+        if render_expert_frame:
+            camera.update(dt=sim.get_physics_dt(), force_recompute=True)
+            wrist_camera.update(dt=sim.get_physics_dt(), force_recompute=True)
         if debug_step:
             print(f"[control-debug] after sim.step seconds={time.perf_counter() - step_started:.6f}", flush=True)
         robot.update(sim.get_physics_dt())
@@ -303,6 +324,17 @@ def move_ee_to(sim, robot, camera, clutter_assets, controller, arm_ids, ee_body_
             print("[control-debug] after robot.update", flush=True)
         for asset in clutter_assets.values():
             asset.update(sim.get_physics_dt())
+        if sample_boundary and (step_index + 1) % physics_steps_per_dataset_frame == 0:
+            segment_end_q = robot.data.joint_pos[0, arm_ids].detach().cpu().numpy().copy()
+            elapsed = physics_steps_per_dataset_frame * sim.get_physics_dt()
+            joint_velocity = (segment_end_q - segment_start_q) / elapsed
+            gripper_position = float(np.clip(gripper_target_m / 0.04, 0.0, 1.0))
+            expert_samples.append({
+                "exterior_image_1_left": external_rel.as_posix(),
+                "wrist_image_left": wrist_rel.as_posix(),
+                "state": np.concatenate((segment_start_q, [finger_state])).astype(np.float32).tolist(),
+                "action": np.concatenate((joint_velocity, [gripper_position])).astype(np.float32).tolist(),
+            })
         if debug_step:
             print("[control-debug] after rigid updates", flush=True)
         root_pose = robot.data.root_pose_w
@@ -316,7 +348,8 @@ def move_ee_to(sim, robot, camera, clutter_assets, controller, arm_ids, ee_body_
 
 
 def execute_visual_grasp(sim, robot, camera, clutter_assets, controller, arm_ids, ee_body_id, jacobian_body_id,
-                         joint_limits, finger_ids, target_world, camera_forward, selected_object, args):
+                         joint_limits, finger_ids, target_world, camera_forward, selected_object, args,
+                         cycle_dir, wrist_camera):
     if args.debug_control:
         print("[control-debug] execute_visual_grasp entered", flush=True)
         print("[control-debug] before initial robot.update", flush=True)
@@ -341,6 +374,8 @@ def execute_visual_grasp(sim, robot, camera, clutter_assets, controller, arm_ids
     # along camera-forward so the two Panda fingers can straddle its width.
     grasp_center = target_world + camera_forward * 0.055
     asset = clutter_assets[selected_object]
+    expert_samples = [] if args.record_expert else None
+    expert_frame_dir = cycle_dir / "expert_frames" if args.record_expert else None
     if args.grasp_point_source in ("oracle_xy", "oracle_xyz"):
         grasp_center = grasp_center.clone()
         grasp_center[:2] = asset.data.root_pos_w[0, :2]
@@ -360,18 +395,21 @@ def execute_visual_grasp(sim, robot, camera, clutter_assets, controller, arm_ids
     object_positions_by_stage = {}
     if args.debug_control:
         print("[control-debug] before first move_ee_to", flush=True)
-    measured["open_and_approach"] = move_ee_to(sim, robot, camera, clutter_assets, controller, arm_ids,
+    measured["open_and_approach"] = move_ee_to(sim, robot, camera, wrist_camera, clutter_assets, controller, arm_ids,
                                                           ee_body_id, jacobian_body_id, approach,
                                                           target_quaternion_w, joint_limits, finger_ids, 0.04,
-                                                          args.ik_steps_per_waypoint)
+                                                          args.ik_steps_per_waypoint,
+                                                          expert_samples, expert_frame_dir)
     object_positions_by_stage["after_approach"] = asset.data.root_pos_w[0].detach().cpu().tolist()
-    measured["descend"] = move_ee_to(sim, robot, camera, clutter_assets, controller, arm_ids,
+    measured["descend"] = move_ee_to(sim, robot, camera, wrist_camera, clutter_assets, controller, arm_ids,
                                               ee_body_id, jacobian_body_id, contact, target_quaternion_w,
-                                              joint_limits, finger_ids, 0.04, args.ik_steps_per_waypoint)
+                                              joint_limits, finger_ids, 0.04, args.ik_steps_per_waypoint,
+                                              expert_samples, expert_frame_dir)
     object_positions_by_stage["after_descend"] = asset.data.root_pos_w[0].detach().cpu().tolist()
-    measured["close"] = move_ee_to(sim, robot, camera, clutter_assets, controller, arm_ids,
+    measured["close"] = move_ee_to(sim, robot, camera, wrist_camera, clutter_assets, controller, arm_ids,
                                              ee_body_id, jacobian_body_id, contact, target_quaternion_w,
-                                             joint_limits, finger_ids, 0.0, args.gripper_close_steps)
+                                             joint_limits, finger_ids, 0.0, args.gripper_close_steps,
+                                             expert_samples, expert_frame_dir)
     object_positions_by_stage["after_close"] = asset.data.root_pos_w[0].detach().cpu().tolist()
     left_finger_body_id = robot.find_bodies("panda_leftfinger")[0][0]
     right_finger_body_id = robot.find_bodies("panda_rightfinger")[0][0]
@@ -379,9 +417,10 @@ def execute_visual_grasp(sim, robot, camera, clutter_assets, controller, arm_ids
     right_finger_position = robot.data.body_pos_w[0, right_finger_body_id].clone()
     finger_midpoint_after_close = 0.5 * (left_finger_position + right_finger_position)
     finger_joint_positions_after_close = robot.data.joint_pos[0, finger_ids].clone()
-    measured["lift"] = move_ee_to(sim, robot, camera, clutter_assets, controller, arm_ids,
+    measured["lift"] = move_ee_to(sim, robot, camera, wrist_camera, clutter_assets, controller, arm_ids,
                                             ee_body_id, jacobian_body_id, lift, target_quaternion_w,
-                                            joint_limits, finger_ids, 0.0, args.ik_steps_per_waypoint)
+                                            joint_limits, finger_ids, 0.0, args.ik_steps_per_waypoint,
+                                            expert_samples, expert_frame_dir)
     object_positions_by_stage["after_lift"] = asset.data.root_pos_w[0].detach().cpu().tolist()
     after_position = asset.data.root_pos_w[0].clone()
     vertical_lift = float((after_position[2] - before_position[2]).item())
@@ -397,6 +436,8 @@ def execute_visual_grasp(sim, robot, camera, clutter_assets, controller, arm_ids
             "object_to_hand_after_m": object_to_hand_after,
             "success_threshold_m": args.success_lift_threshold, "ik_reached_contact": ik_reached_contact,
             "waypoint_diagnostics": measured, "object_positions_by_stage": object_positions_by_stage,
+            "expert_sample_count": len(expert_samples) if expert_samples is not None else 0,
+            "expert_samples": expert_samples if expert_samples is not None else [],
             "left_finger_after_close_world_m": left_finger_position.detach().cpu().tolist(),
             "right_finger_after_close_world_m": right_finger_position.detach().cpu().tolist(),
             "finger_midpoint_after_close_world_m": finger_midpoint_after_close.detach().cpu().tolist(),
@@ -576,7 +617,21 @@ def main():
         else:
             grasp_result = execute_visual_grasp(sim, robot, camera, clutter, controller, arm_ids,
                                                 ee_body_id, jacobian_body_id, limits, finger_ids,
-                                                grasp_point_world, camera_forward_world, selected_name, args)
+                                                grasp_point_world, camera_forward_world, selected_name, args,
+                                                cycle_dir, wrist_camera)
+            if args.record_expert:
+                expert_manifest = {
+                    "success": bool(grasp_result["success"]),
+                    "task": f"Clear access to {args.target} by grasping {selected_name}.",
+                    "frames": grasp_result.get("expert_samples", []),
+                    "success_threshold_m": args.success_lift_threshold,
+                    "provenance": "Isaac Lab visual_ik expert; only success=true episodes may be used for Pi05 training.",
+                }
+                if expert_manifest["success"] and len(expert_manifest["frames"]) >= 2:
+                    (cycle_dir / "expert_episode_manifest.json").write_text(json.dumps(expert_manifest, indent=2) + "\n", encoding="utf-8")
+                else:
+                    expert_manifest["success"] = False
+                    (cycle_dir / "expert_candidate_rejected.json").write_text(json.dumps(expert_manifest, indent=2) + "\n", encoding="utf-8")
         after = {name: asset.data.root_pos_w[0].detach().cpu().tolist() for name, asset in clutter.items()}
         hand_after = robot.data.body_pos_w[0, ee_body_id].detach().cpu().numpy()
         object_before = np.asarray(control_objects_before[selected_name], dtype=np.float32)

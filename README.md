@@ -110,6 +110,17 @@ $ISAAC_PYTHON scripts/isaac_occluded_grasp_feedback_loop.py \
 
 Use `--control-source visual_ik` for the geometric-controller comparison. The loop stores per-cycle inputs, action chunks, execution logs, safety clipping, object motion, and aggregate evaluation metrics under `--out-dir`.
 
+For expert-data collection, add `--record-expert` with `--control-source visual_ik`. The recorder samples synchronized exterior/wrist RGB, 8D Panda state, and measured 7D joint-velocity plus gripper actions at 15 Hz. It writes `expert_episode_manifest.json` only when the simulated grasp-success checks pass; unsuccessful trials are saved separately as rejected candidates and must not be used for training. Convert a verified manifest into LeRobot format with:
+
+```bash
+uv run python scripts/export_occluded_grasp_expert_episode.py \
+  --manifest /path/to/expert_episode_manifest.json \
+  --repo-id your-org/occluded-grasp-expert \
+  --output-root /path/to/lerobot-dataset
+```
+
+The expert recorder is experimental and must be runtime-validated in Isaac before collecting a training set.
+
 
 Our pre-trained model checkpoints can be run with a few lines of code (here our $\pi_0$-FAST-DROID model):
 ```python
