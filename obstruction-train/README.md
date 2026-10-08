@@ -63,6 +63,36 @@ python -m obstruction_train.train_pair_transformer \
 '
 ```
 
+## Fine-tune from Isaac proxy captures
+
+The feedback-loop output contains `cycle_*/rgb.npy`, `depth.npy`, `instance_segmentation.npy`, and `camera_info.json`. Convert a collection of varied runs into this trainer's expected ZIP + JSONL format:
+
+```bash
+cd /home/media/zy/OccludedGrasp/obstruction-train
+PYTHONPATH=. /home/media/zy/eventvla_openpi/.venv/bin/python -m obstruction_train.export_isaac_proxy_pairs \
+  --capture-root /path/to/varied_isaac_capture_runs \
+  --out-root /path/to/isaac_occlusion_pairs \
+  --val-ratio 0.2
+```
+
+This exporter labels a pair as directed obstruction only when projected bounding boxes overlap and the instance median depths have a clear front/back margin. These are approximate simulator labels, not human-verified amodal labels. It refuses to produce train/validation splits if no directional positives exist. The current two-cycle smoke produced only `NONE` pairs under this conservative geometric rule, so it validates the capture format but **must not be used to fine-tune**. Collect more layouts with projected overlap before training.
+
+Once the dataset has both positive and negative pairs, fine-tune from the available base checkpoint:
+
+```bash
+cd /home/media/zy/OccludedGrasp/obstruction-train
+PYTHONPATH=. /home/media/zy/eventvla_openpi/.venv/bin/python -m obstruction_train.train_pair_transformer \
+  --unobench-root /path/to/isaac_occlusion_pairs \
+  --train-jsonl /path/to/isaac_occlusion_pairs/train_pairs.jsonl \
+  --val-jsonl /path/to/isaac_occlusion_pairs/val_pairs.jsonl \
+  --out-dir outputs/pair_transformer_isaac_ft \
+  --model pair_transformer_base \
+  --resume outputs/pair_transformer_unobench/best.pt \
+  --reset-optimizer --reset-best --epochs 5 --batch-size 32 --lr 1e-5 --device cuda
+```
+
+The `--resume` file must be a compatible `pair_transformer_base` checkpoint. Keep scene/layouts disjoint between train and validation captures.
+
 ## Architecture
 
 V1 uses a pair crop only, not a separate global-context branch:
