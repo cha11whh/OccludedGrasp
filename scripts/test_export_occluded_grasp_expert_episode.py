@@ -28,6 +28,7 @@ def test_validates_successful_droid_episode(tmp_path):
     assert frames[0]["gripper_position"].shape == (1,)
     assert frames[0]["actions"].shape == (8,)
     assert frames[0]["exterior_image_1_left"].shape == (8, 10, 3)
+    assert np.array_equal(frames[0]["exterior_image_2_left"], frames[0]["exterior_image_1_left"])
 
 
 def test_refuses_unsuccessful_episode(tmp_path):

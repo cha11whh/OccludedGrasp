@@ -65,6 +65,10 @@ def validate_episode(episode: dict[str, Any], manifest_dir: Path) -> list[dict[s
             elif rgb.shape != expected_shape:
                 raise ValueError(f"frames[{index}].{key} has shape {rgb.shape}, expected {expected_shape}")
             output[key] = rgb
+        # The stock pi05_droid repack transform requires a second exterior view.
+        # The current simulator provides one external camera, so duplicate it
+        # explicitly for schema compatibility; this is not a true second view.
+        output["exterior_image_2_left"] = output["exterior_image_1_left"].copy()
         validated.append(output)
     return validated
 
@@ -83,6 +87,7 @@ def export_episode(manifest_path: Path, repo_id: str, output_root: Path) -> int:
         fps=15,
         features={
             "exterior_image_1_left": {"dtype": "image", "shape": image_shape, "names": ["height", "width", "channel"]},
+            "exterior_image_2_left": {"dtype": "image", "shape": image_shape, "names": ["height", "width", "channel"]},
             "wrist_image_left": {"dtype": "image", "shape": image_shape, "names": ["height", "width", "channel"]},
             "joint_position": {"dtype": "float32", "shape": (7,), "names": ["joint_position"]},
             "gripper_position": {"dtype": "float32", "shape": (1,), "names": ["gripper_position"]},
