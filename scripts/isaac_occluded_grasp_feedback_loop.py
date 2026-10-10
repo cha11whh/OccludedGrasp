@@ -21,6 +21,10 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--out-dir", type=Path, required=True)
 parser.add_argument("--target", default="GreenMugProxy")
 parser.add_argument("--cycles", type=int, default=2)
+parser.add_argument("--robot-x", type=float, default=0.0,
+                    help="Franka base X in the proxy scene.")
+parser.add_argument("--robot-y", type=float, default=-0.72,
+                    help="Franka base Y in the proxy scene; move it closer to the cabinet to keep targets in reachable workspace.")
 parser.add_argument("--ik-steps-per-waypoint", type=int, default=120)
 parser.add_argument("--grasp-approach-distance", type=float, default=0.05)
 parser.add_argument("--grasp-lift-height", type=float, default=0.08)
@@ -566,7 +570,7 @@ def main():
     ]
     clutter = {name: clutter_box(name, size, pos, color) for name, size, pos, color in clutter_specs}
     robot_cfg = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="/World/Robot")
-    robot_cfg.init_state.pos = (0.0, -0.72, 0.70)
+    robot_cfg.init_state.pos = (args.robot_x, args.robot_y, 0.70)
     robot_cfg.init_state.rot = (0.7071068, 0.0, 0.0, 0.7071068)
     robot = Articulation(cfg=robot_cfg)
     sim_utils.create_prim("/World/CameraRoot", "Xform")
