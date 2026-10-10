@@ -142,6 +142,14 @@ PATH=/home/media/miniforge3/envs/isaaclab/bin:$PATH \
 
 The validated two-cycle run selected `RedBoxProxy` as the blocker of `BlueBoxProxy`, relocated it in the proxy-only transition, then re-observed and selected `BlueBoxProxy` on the next cycle. `feedback_summary.json` and per-cycle JSON retain `grasp_success: false` to avoid mislabeling this oracle transition. Omit `--pi05-execution-mode kinematic_proxy --proxy-relocate-selected` to use the slower physical action executor; that mode has not yet completed this two-cycle smoke.
 
+Validate an existing proxy run's artifacts (and ensure no proxy transition was mislabeled as a grasp):
+
+```bash
+PYTHONPATH=src:scripts /home/media/zy/eventvla_openpi/.venv/bin/python \
+    scripts/validate_occluded_grasp_proxy_run.py \
+    --run-dir /tmp/occluded_grasp_fast_full_chain --expected-cycles 2
+```
+
 #### Fine-tuning after collecting real simulator demonstrations
 
 For the obstruction model, `obstruction_train.export_isaac_proxy_pairs` converts multiple feedback-loop RGB-D/instance-segmentation captures to the pair trainer's ZIP + JSONL format. Its labels are only an approximate simulator rule (projected bounding-box overlap + depth ordering), not ground truth; the exporter refuses a NONE-only set. Collect many varied layouts with positive and negative relations before training:
