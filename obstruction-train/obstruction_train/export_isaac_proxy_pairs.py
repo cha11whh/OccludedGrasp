@@ -46,6 +46,7 @@ def _pair_rows(
     instances: np.ndarray,
     object_ids: list[int],
     *,
+    designated_front_back: tuple[int, int] | None,
     overlap_threshold: float,
     depth_margin_m: float,
 ) -> list[dict[str, Any]]:
@@ -68,6 +69,51 @@ def _pair_rows(
             overlap_area = max(0, x1 - x0) * max(0, y1 - y0)
             first_area = (first_box[2] - first_box[0]) * (first_box[3] - first_box[1])
             second_area = (second_box[2] - second_box[0]) * (second_box[3] - second_box[1])
+
+            # In the randomized collection mode, the scene generator records the
+            # deliberately overlapping front/back pair. Modal-mask boxes can be
+            # disjoint precisely because one object occludes the other, so use
+            # that simulator pose annotation as the directed relation label;
+            # require both instances visible and verify camera depth agrees.
+            if designated_front_back is not None and set((first_id, second_id)) == set(designated_front_back):
+                front_id, back_id = designated_front_back
+                if front_id not in medians or back_id not in medians:
+                    continue
+                front_depth, back_depth = medians[front_id], medians[back_id]
+                if front_depth + depth_margin_m >= back_depth:
+                    for obj_a, obj_b in ((first_id, second_id), (second_id, first_id)):
+                        rows.append({"image_id": image_id, "image_path": image_path, "npz_path": npz_path,
+                                     "scene_id": image_id, "view_id": 0, "obj_a": obj_a, "obj_b": obj_b,
+                                     "label": 2, "mask_ratio": 0.0, "mask_area": 0, "point": None})
+                    continue
+                front_box, back_box = boxes[front_id], boxes[back_id]
+                overlap_x0 = max(front_box[0], back_box[0])
+                overlap_y0 = max(front_box[1], back_box[1])
+                overlap_x1 = min(front_box[2], back_box[2])
+                overlap_y1 = min(front_box[3], back_box[3])
+                visible_intersection = max(0, overlap_x1 - overlap_x0) * max(0, overlap_y1 - overlap_y0)
+                # The scene generator knows the proxy AABBs overlap; modal
+                # intersection may be zero. Use a conservative weak auxiliary
+                # ratio/contact target, clearly separate from the primary class.
+                front_area = max((front_box[2] - front_box[0]) * (front_box[3] - front_box[1]), 1)
+                ratio = max(visible_intersection / front_area, 0.05)
+                if visible_intersection:
+                    point = {"x": (overlap_x0 + overlap_x1) // 2, "y": (overlap_y0 + overlap_y1) // 2}
+                else:
+                    front_center = ((front_box[0] + front_box[2]) // 2, (front_box[1] + front_box[3]) // 2)
+                    back_center = ((back_box[0] + back_box[2]) // 2, (back_box[1] + back_box[3]) // 2)
+                    point = {"x": (front_center[0] + back_center[0]) // 2,
+                             "y": (front_center[1] + back_center[1]) // 2}
+                rows.append({"image_id": image_id, "image_path": image_path, "npz_path": npz_path,
+                             "scene_id": image_id, "view_id": 0, "obj_a": front_id, "obj_b": back_id,
+                             "label": 0, "mask_ratio": float(ratio), "mask_area": int(visible_intersection),
+                             "point": point})
+                rows.append({"image_id": image_id, "image_path": image_path, "npz_path": npz_path,
+                             "scene_id": image_id, "view_id": 0, "obj_a": back_id, "obj_b": front_id,
+                             "label": 1, "mask_ratio": float(ratio), "mask_area": int(visible_intersection),
+                             "point": point})
+                continue
+
             if first_id in medians and second_id in medians and overlap_area > 0:
                 # Smaller camera depth is closer. The pair is positive only when
                 # there is meaningful projected overlap and a visible depth gap.
@@ -77,11 +123,11 @@ def _pair_rows(
                         rows.append({"image_id": image_id, "image_path": image_path, "npz_path": npz_path,
                                      "scene_id": image_id, "view_id": 0, "obj_a": first_id, "obj_b": second_id,
                                      "label": 0, "mask_ratio": float(ratio), "mask_area": int(overlap_area),
-                                     "point": [(x0 + x1) // 2, (y0 + y1) // 2]})
+                                     "point": {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2}})
                         rows.append({"image_id": image_id, "image_path": image_path, "npz_path": npz_path,
                                      "scene_id": image_id, "view_id": 0, "obj_a": second_id, "obj_b": first_id,
                                      "label": 1, "mask_ratio": float(ratio), "mask_area": int(overlap_area),
-                                     "point": [(x0 + x1) // 2, (y0 + y1) // 2]})
+                                     "point": {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2}})
                         continue
                 elif medians[second_id] + depth_margin_m < medians[first_id]:
                     ratio = overlap_area / max(first_area, 1)
@@ -89,11 +135,11 @@ def _pair_rows(
                         rows.append({"image_id": image_id, "image_path": image_path, "npz_path": npz_path,
                                      "scene_id": image_id, "view_id": 0, "obj_a": second_id, "obj_b": first_id,
                                      "label": 0, "mask_ratio": float(ratio), "mask_area": int(overlap_area),
-                                     "point": [(x0 + x1) // 2, (y0 + y1) // 2]})
+                                     "point": {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2}})
                         rows.append({"image_id": image_id, "image_path": image_path, "npz_path": npz_path,
                                      "scene_id": image_id, "view_id": 0, "obj_a": first_id, "obj_b": second_id,
                                      "label": 1, "mask_ratio": float(ratio), "mask_area": int(overlap_area),
-                                     "point": [(x0 + x1) // 2, (y0 + y1) // 2]})
+                                     "point": {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2}})
                         continue
             # Include both pair orders so the NONE class has no directional bias.
             for obj_a, obj_b in ((first_id, second_id), (second_id, first_id)):
@@ -128,7 +174,15 @@ def export_captures(capture_root: Path, output_root: Path, *, val_ratio: float =
             npz_buffer = io.BytesIO()
             np.savez_compressed(npz_buffer, depth=depth, instances_objects=instances)
             meta_zip.writestr(npz_path, npz_buffer.getvalue())
+            result_path = cycle_dir / "cycle_result.json"
+            layout = json.loads(result_path.read_text(encoding="utf-8")).get("obstruction_data_layout", {}) if result_path.is_file() else {}
+            name_to_id = {label.rsplit("/", 1)[-1]: object_id for object_id, label in labels.items()}
+            front_name, back_name = layout.get("front_object"), layout.get("back_object")
+            designated_pair = None
+            if front_name in name_to_id and back_name in name_to_id:
+                designated_pair = (name_to_id[front_name], name_to_id[back_name])
             rows.extend(_pair_rows(image_id, image_path, npz_path, depth, instances, object_ids,
+                                   designated_front_back=designated_pair,
                                    overlap_threshold=overlap_threshold, depth_margin_m=depth_margin_m))
 
     if not rows:
@@ -142,15 +196,35 @@ def export_captures(capture_root: Path, output_root: Path, *, val_ratio: float =
     image_ids = sorted({int(row["image_id"]) for row in rows})
     if len(image_ids) < 2:
         raise ValueError("at least two distinct captured scenes are required for a train/validation split")
-    random.Random(seed).shuffle(image_ids)
-    n_val = max(1, min(len(image_ids) - 1, round(len(image_ids) * val_ratio)))
-    val_ids = set(image_ids[:n_val])
-    for split_name, selected in (("train", [row for row in rows if row["image_id"] not in val_ids]),
-                                 ("val", [row for row in rows if row["image_id"] in val_ids])):
+    rng = random.Random(seed)
+    shuffled_ids = image_ids.copy()
+    rng.shuffle(shuffled_ids)
+    n_val = max(2, min(len(image_ids) - 1, round(len(image_ids) * val_ratio)))
+    positive_scenes = [scene_id for scene_id in shuffled_ids
+                       if any(row["image_id"] == scene_id and row["label"] in (0, 1) for row in rows)]
+    none_scenes = [scene_id for scene_id in shuffled_ids
+                   if any(row["image_id"] == scene_id and row["label"] == 2 for row in rows)]
+    if len(positive_scenes) < 2 or len(none_scenes) < 2:
+        raise ValueError("need at least two positive and two NONE scenes so both splits can contain every relation class")
+    val_ids = {positive_scenes[0]}
+    none_for_val = next((scene_id for scene_id in none_scenes if scene_id not in val_ids), none_scenes[0])
+    val_ids.add(none_for_val)
+    for scene_id in shuffled_ids:
+        if len(val_ids) >= n_val:
+            break
+        val_ids.add(scene_id)
+    splits = (("train", [row for row in rows if row["image_id"] not in val_ids]),
+              ("val", [row for row in rows if row["image_id"] in val_ids]))
+    split_label_counts = {}
+    for split_name, selected in splits:
+        split_label_counts[split_name] = {str(label): sum(row["label"] == label for row in selected) for label in range(3)}
+        if any(count == 0 for count in split_label_counts[split_name].values()):
+            raise ValueError(f"{split_name} split is missing a relation class: {split_label_counts[split_name]}; collect more varied layouts")
         with (output_root / f"{split_name}_pairs.jsonl").open("w", encoding="utf-8") as stream:
             for row in selected:
                 stream.write(json.dumps(row) + "\n")
     summary = {"scenes": len(image_ids), "pairs": len(rows), "label_counts": label_counts,
+               "split_label_counts": split_label_counts,
                "train_pairs": sum(row["image_id"] not in val_ids for row in rows),
                "val_pairs": sum(row["image_id"] in val_ids for row in rows)}
     (output_root / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

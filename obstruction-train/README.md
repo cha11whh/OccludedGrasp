@@ -65,7 +65,7 @@ python -m obstruction_train.train_pair_transformer \
 
 ## Fine-tune from Isaac proxy captures
 
-The feedback-loop output contains `cycle_*/rgb.npy`, `depth.npy`, `instance_segmentation.npy`, and `camera_info.json`. Convert a collection of varied runs into this trainer's expected ZIP + JSONL format:
+The feedback-loop output contains `cycle_*/rgb.npy`, `depth.npy`, `instance_segmentation.npy`, and `camera_info.json`. With `--randomize-obstruction-layouts`, it also records the designed front/back box pair in `cycle_result.json`. That directed pair is used as a simulator oracle relation label only when both instances are visible and the measured camera depth confirms the configured front/back order; other pairs are derived from mask-box overlap and median depth.
 
 ```bash
 cd /home/media/zy/OccludedGrasp/obstruction-train
@@ -75,7 +75,7 @@ PYTHONPATH=. /home/media/zy/eventvla_openpi/.venv/bin/python -m obstruction_trai
   --val-ratio 0.2
 ```
 
-This exporter labels a pair as directed obstruction only when projected bounding boxes overlap and the instance median depths have a clear front/back margin. These are approximate simulator labels, not human-verified amodal labels. It refuses to produce train/validation splits if no directional positives exist. The current two-cycle smoke produced only `NONE` pairs under this conservative geometric rule, so it validates the capture format but **must not be used to fine-tune**. Collect more layouts with projected overlap before training.
+All labels are low-fidelity simulator proxy labels, not human-verified real-scene or amodal labels. The exporter refuses to produce a NONE-only data set, requires at least two positive and two NONE scenes, and keeps all three classes present in each split. A small 8-layout smoke produced 7 rows in each direction and 76 NONE rows (6/6/60 train, 1/1/16 validation); this is enough to test the format and short trainer run, not to claim useful model quality.
 
 Once the dataset has both positive and negative pairs, fine-tune from the available base checkpoint:
 
@@ -91,7 +91,7 @@ PYTHONPATH=. /home/media/zy/eventvla_openpi/.venv/bin/python -m obstruction_trai
   --reset-optimizer --reset-best --epochs 5 --batch-size 32 --lr 1e-5 --device cuda
 ```
 
-The `--resume` file must be a compatible `pair_transformer_base` checkpoint. Keep scene/layouts disjoint between train and validation captures.
+The `--resume` file must be a compatible `pair_transformer_base` checkpoint. Keep scene/layouts disjoint between train and validation captures. A one-epoch, 32-sample fine-tune smoke successfully wrote a checkpoint and loaded through `estimate_obstruction.py`; its validation contained only one sample per directed class, so its reported metric is not a quality estimate.
 
 ## Architecture
 
