@@ -150,24 +150,41 @@ PYTHONPATH=src:scripts /home/media/zy/eventvla_openpi/.venv/bin/python \
     --run-dir /tmp/occluded_grasp_fast_full_chain --expected-cycles 2
 ```
 
-#### Fine-tuning after collecting real simulator demonstrations
+#### Obstruction-model data collection and fine-tune plumbing
 
-For the obstruction model, `obstruction_train.export_isaac_proxy_pairs` converts multiple feedback-loop RGB-D/instance-segmentation captures to the pair trainer's ZIP + JSONL format. Its labels are only an approximate simulator rule (projected bounding-box overlap + depth ordering), not ground truth; the exporter refuses a NONE-only set. Collect many varied layouts with positive and negative relations before training:
+Capture a deterministic batch of low-fidelity scenes with a deliberately overlapping front/back box pair. This mode does not call either learned model and does not use its own predictions as labels:
+
+```bash
+cd /home/media/zy/IsaacLab
+CONDA_PREFIX=/home/media/miniforge3/envs/isaaclab \
+PATH=/home/media/miniforge3/envs/isaaclab/bin:$PATH \
+./isaaclab.sh -p /home/media/zy/pi_work/openpi_official/scripts/isaac_occluded_grasp_feedback_loop.py \
+    --headless --enable_cameras --out-dir /tmp/occluded_grasp_obstruction_layouts_v2 \
+    --cycles 64 --randomize-obstruction-layouts --layout-seed 20261012 \
+    --skip-model-inference --control-source pi05 --pi05-execution-mode kinematic_proxy \
+    --warmup-steps 1 --width 160 --height 120
+```
+
+The capture mode alternates which box is in front, varies their lateral overlap, and keeps separate objects for `NONE` pairs. It records the intended front/back object names and positions in `cycle_result.json`; the exporter uses this simulator layout annotation for the designed pair and verifies camera depth agrees. These are **simulator-generated proxy labels**, not human-verified real-scene labels or amodal ground truth. The exporter refuses datasets without positives and refuses train/validation splits missing any of the three classes. Eight smoke scenes yielded 7 directed pairs each way and 76 `NONE` rows, with all classes in both splits; this is only enough to exercise plumbing, not to claim model quality.
+
+Convert to the pair trainer ZIP + JSONL format, then fine-tune from the available base checkpoint:
 
 ```bash
 cd /home/media/zy/OccludedGrasp/obstruction-train
 PYTHONPATH=. /home/media/zy/eventvla_openpi/.venv/bin/python -m obstruction_train.export_isaac_proxy_pairs \
-    --capture-root /path/to/varied_isaac_capture_runs \
-    --out-root /path/to/isaac_occlusion_pairs
+    --capture-root /tmp/occluded_grasp_obstruction_layouts_v2 \
+    --out-root /tmp/occluded_grasp_obstruction_pairs_v2 --val-ratio 0.25 --seed 20261012
 PYTHONPATH=. /home/media/zy/eventvla_openpi/.venv/bin/python -m obstruction_train.train_pair_transformer \
-    --unobench-root /path/to/isaac_occlusion_pairs \
-    --train-jsonl /path/to/isaac_occlusion_pairs/train_pairs.jsonl \
-    --val-jsonl /path/to/isaac_occlusion_pairs/val_pairs.jsonl \
+    --unobench-root /tmp/occluded_grasp_obstruction_pairs_v1 \
+    --train-jsonl /tmp/occluded_grasp_obstruction_pairs_v1/train_pairs.jsonl \
+    --val-jsonl /tmp/occluded_grasp_obstruction_pairs_v1/val_pairs.jsonl \
     --out-dir outputs/pair_transformer_isaac_ft \
     --model pair_transformer_base \
     --resume outputs/pair_transformer_unobench/best.pt \
     --reset-optimizer --reset-best --epochs 5 --batch-size 32 --lr 1e-5 --device cuda
 ```
+
+An 8-layout plumbing smoke produced 7 directed rows each way plus 76 `NONE` pairs (train: 6/6/60, validation: 1/1/16). A 1-epoch `pair_transformer_base` fine-tune from the existing base checkpoint completed, its checkpoint loaded in `estimate_obstruction.py`, and it ran in the two-cycle feedback loop. The tiny validation set reported macro-F1 1.0 but contains only one sample per direction; this is not a meaningful quality estimate and the checkpoint is only an integration smoke. Collect hundreds/thousands of diverse layouts and a scene-disjoint validation set before considering the fine-tuned model useful.
 
 For Pi05, first collect episodes with `--record-expert --control-source visual_ik` and keep only generated manifests with `success: true`; do not use `--proxy-relocate-selected` episodes as grasp demonstrations. Each valid manifest should contain at least one 16-step action horizon and the same prompt/task that the behavior executes. Export into the local LeRobot cache, then fine-tune from the available local Pi05 parameters while reusing DROID normalization statistics:
 

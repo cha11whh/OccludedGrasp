@@ -21,6 +21,9 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--out-dir", type=Path, required=True)
 parser.add_argument("--target", default="GreenMugProxy")
 parser.add_argument("--cycles", type=int, default=2)
+parser.add_argument("--randomize-obstruction-layouts", action="store_true",
+                    help="Capture varied, deterministic clutter layouts for approximate obstruction-model training data.")
+parser.add_argument("--layout-seed", type=int, default=1337)
 parser.add_argument("--robot-x", type=float, default=0.0,
                     help="Franka base X in the proxy scene.")
 parser.add_argument("--robot-y", type=float, default=-0.72,
@@ -63,6 +66,10 @@ if min(args.cycles, args.ik_steps_per_waypoint, args.gripper_close_steps, args.w
     parser.error("cycle/IK/close/image settings and grasp distances must be positive; warmup must be non-negative")
 if args.proxy_relocate_selected and args.pi05_execution_mode != "kinematic_proxy":
     parser.error("--proxy-relocate-selected requires --pi05-execution-mode kinematic_proxy")
+if args.randomize_obstruction_layouts and not args.skip_model_inference:
+    parser.error("--randomize-obstruction-layouts requires --skip-model-inference; collection must not invoke learned outputs as labels")
+if args.randomize_obstruction_layouts and (args.record_expert or args.proxy_relocate_selected):
+    parser.error("obstruction-data layout collection cannot record grasp demonstrations or use proxy relocations")
 if not args.skip_model_inference:
     required_paths = {
         "--model-python/OPENPI_MODEL_PYTHON": args.model_python,
@@ -105,7 +112,7 @@ def clutter_box(name, size, position, color):
         prim_path=f"/World/Clutter/{name}",
         spawn=sim_utils.CuboidCfg(
             size=size,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=args.randomize_obstruction_layouts),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.12),
             collision_props=sim_utils.CollisionPropertiesCfg(),
             physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -118,6 +125,36 @@ def clutter_box(name, size, position, color):
         init_state=RigidObjectCfg.InitialStateCfg(pos=position),
     )
     return RigidObject(cfg=cfg)
+
+
+def set_obstruction_layout(clutter_assets, layout_index, rng, device):
+    """Arrange one overlapping front/back pair plus spatially separate negatives."""
+    front_back_pairs = [
+        ("RedBoxProxy", "BlueBoxProxy"),
+        ("BlueBoxProxy", "RedBoxProxy"),
+    ]
+    front_name, back_name = front_back_pairs[layout_index % len(front_back_pairs)]
+    center_x = float(rng.uniform(-0.08, 0.08))
+    # A small lateral offset keeps a visible portion of the rear object while
+    # guaranteeing substantial projected-box overlap. These objects are spawned
+    # kinematic in data-collection mode, so the deliberate visual overlap does not
+    # get resolved away by PhysX before the camera captures it.
+    front_x = center_x - 0.025 + float(rng.uniform(-0.008, 0.008))
+    back_x = center_x + 0.025 + float(rng.uniform(-0.008, 0.008))
+    positions = {
+        front_name: (front_x, -0.10, 1.08 if front_name == "RedBoxProxy" else 1.05),
+        back_name: (back_x, -0.05, 1.08 if back_name == "RedBoxProxy" else 1.05),
+        "GreenMugProxy": (-0.39, -0.08, 1.0275),
+        "YellowBoxProxy": (0.36, 0.08, 1.515),
+    }
+    for name, asset in clutter_assets.items():
+        root_state = asset.data.root_state_w[0].clone()
+        root_state[:3] = torch.tensor(positions[name], dtype=torch.float32, device=device)
+        root_state[7:] = 0.0
+        asset.write_root_state_to_sim(root_state[None, :])
+    for asset in clutter_assets.values():
+        asset.update(0.0)
+    return {"front_object": front_name, "back_object": back_name, "positions": positions}
 
 
 def run_stage(name, command, env, logs):
@@ -617,9 +654,13 @@ def main():
         num_envs=1, device=sim.device,
     )
     records = []
+    layout_rng = np.random.default_rng(args.layout_seed)
     for cycle in range(args.cycles):
         cycle_dir = output_root / f"cycle_{cycle:03d}"
         cycle_dir.mkdir(parents=True, exist_ok=True)
+        layout_info = None
+        if args.randomize_obstruction_layouts:
+            layout_info = set_obstruction_layout(clutter, cycle, layout_rng, sim.device)
         before = {name: asset.data.root_pos_w[0].detach().cpu().tolist() for name, asset in clutter.items()}
         rgb_path, wrist_rgb_path, depth_path, labels = capture(
             sim, camera, wrist_camera, cycle_dir, warmup=(cycle == 0)
@@ -686,6 +727,7 @@ def main():
             pi05_execution["selected_object_vertical_displacement_m"] = selected_lift
             pi05_execution["selected_object_to_hand_after_m"] = object_to_hand
         record = {"cycle": cycle, "selected": selected, "ranked_actions": ranked["ranked_actions"],
+                  "obstruction_data_layout": layout_info,
                   "control_source": args.control_source, "pi05_state": robot_state.tolist(),
                   "hand_object_distance_before_m": hand_object_distance_before,
                   "hand_object_distance_after_m": hand_object_distance_after,
