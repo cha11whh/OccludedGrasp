@@ -170,6 +170,11 @@ def set_obstruction_layout(clutter_assets, layout_index, rng, device):
         "GreenMugProxy": (-0.39, -0.08, 1.0275),
         "WaterBottleProxy": (0.33, -0.12, 1.56),
         "YellowBoxProxy": (0.36, 0.08, 1.515),
+        "MilkCartonProxy": (-0.37, 0.08, 1.08),
+        "SoupCanProxy": (-0.35, -0.17, 1.045),
+        "BowlProxy": (0.38, -0.17, 1.015),
+        "DetergentBottleProxy": (-0.36, 0.08, 1.49),
+        "TissueBoxProxy": (0.02, 0.18, 1.48),
     }
     for name, asset in clutter_assets.items():
         root_state = asset.data.root_state_w[0].clone()
@@ -627,6 +632,8 @@ def main():
         ("BlueBoxProxy", (0.25, 0.18, 0.22), (0.06, 0.04, 1.05), (0.20, 0.35, 0.85)),
         ("RedBoxProxy", (0.19, 0.18, 0.28), (0.25, 0.10, 1.08), (0.85, 0.18, 0.12)),
         ("YellowBoxProxy", (0.24, 0.18, 0.23), (-0.20, 0.08, 1.52), (0.85, 0.70, 0.12)),
+        ("MilkCartonProxy", (0.105, 0.105, 0.19), (-0.37, 0.08, 1.08), (0.93, 0.91, 0.78)),
+        ("TissueBoxProxy", (0.16, 0.12, 0.095), (0.02, 0.18, 1.48), (0.78, 0.68, 0.52)),
     ]
     clutter = {name: clutter_box(name, size, pos, color) for name, size, pos, color in clutter_specs}
     # Low-fidelity but non-box household shapes make scenes less toy-like while
@@ -636,6 +643,15 @@ def main():
     )
     clutter["WaterBottleProxy"] = clutter_cylinder(
         "WaterBottleProxy", radius=0.042, height=0.28, position=(0.33, -0.12, 1.56), color=(0.12, 0.72, 0.82)
+    )
+    clutter["SoupCanProxy"] = clutter_cylinder(
+        "SoupCanProxy", radius=0.043, height=0.13, position=(-0.35, -0.17, 1.045), color=(0.83, 0.28, 0.12)
+    )
+    clutter["BowlProxy"] = clutter_cylinder(
+        "BowlProxy", radius=0.085, height=0.055, position=(0.38, -0.17, 1.015), color=(0.92, 0.78, 0.22)
+    )
+    clutter["DetergentBottleProxy"] = clutter_cylinder(
+        "DetergentBottleProxy", radius=0.058, height=0.22, position=(-0.36, 0.08, 1.49), color=(0.24, 0.48, 0.88)
     )
     robot_cfg = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="/World/Robot")
     # Keep the Franka out of the fixed scene-camera frustum during relation-data
