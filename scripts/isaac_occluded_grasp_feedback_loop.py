@@ -127,6 +127,29 @@ def clutter_box(name, size, position, color):
     return RigidObject(cfg=cfg)
 
 
+def clutter_cylinder(name, radius, height, position, color):
+    """Spawn a simple cylinder proxy for common household containers."""
+    cfg = RigidObjectCfg(
+        prim_path=f"/World/Clutter/{name}",
+        spawn=sim_utils.CylinderCfg(
+            radius=radius,
+            height=height,
+            axis="Z",
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=args.randomize_obstruction_layouts),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.12),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=2.0, dynamic_friction=2.0, restitution=0.0,
+                friction_combine_mode="max", restitution_combine_mode="min",
+            ),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
+            semantic_tags=[("class", name)],
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=position),
+    )
+    return RigidObject(cfg=cfg)
+
+
 def set_obstruction_layout(clutter_assets, layout_index, rng, device):
     """Arrange one overlapping front/back pair plus spatially separate negatives."""
     front_back_pairs = [
@@ -145,6 +168,7 @@ def set_obstruction_layout(clutter_assets, layout_index, rng, device):
         front_name: (front_x, -0.10, 1.08 if front_name == "RedBoxProxy" else 1.05),
         back_name: (back_x, -0.05, 1.08 if back_name == "RedBoxProxy" else 1.05),
         "GreenMugProxy": (-0.39, -0.08, 1.0275),
+        "WaterBottleProxy": (0.33, -0.12, 1.56),
         "YellowBoxProxy": (0.36, 0.08, 1.515),
     }
     for name, asset in clutter_assets.items():
@@ -600,12 +624,19 @@ def main():
     static_box("/World/Cabinet/Shelf0", (0.96, 0.62, 0.045), (0.0, 0.02, 0.93), (0.64, 0.48, 0.30), "shelf")
     static_box("/World/Cabinet/Shelf1", (0.96, 0.62, 0.045), (0.0, 0.02, 1.40), (0.64, 0.48, 0.30), "shelf")
     clutter_specs = [
-        ("GreenMugProxy", (0.02, 0.04, 0.15), (-0.10, -0.15, 1.0275), (0.10, 0.65, 0.25)),
         ("BlueBoxProxy", (0.25, 0.18, 0.22), (0.06, 0.04, 1.05), (0.20, 0.35, 0.85)),
         ("RedBoxProxy", (0.19, 0.18, 0.28), (0.25, 0.10, 1.08), (0.85, 0.18, 0.12)),
         ("YellowBoxProxy", (0.24, 0.18, 0.23), (-0.20, 0.08, 1.52), (0.85, 0.70, 0.12)),
     ]
     clutter = {name: clutter_box(name, size, pos, color) for name, size, pos, color in clutter_specs}
+    # Low-fidelity but non-box household shapes make scenes less toy-like while
+    # preserving the existing labels used by the relation/ranking pipeline.
+    clutter["GreenMugProxy"] = clutter_cylinder(
+        "GreenMugProxy", radius=0.055, height=0.14, position=(-0.10, -0.15, 1.0275), color=(0.10, 0.65, 0.25)
+    )
+    clutter["WaterBottleProxy"] = clutter_cylinder(
+        "WaterBottleProxy", radius=0.042, height=0.28, position=(0.33, -0.12, 1.56), color=(0.12, 0.72, 0.82)
+    )
     robot_cfg = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="/World/Robot")
     # Keep the Franka out of the fixed scene-camera frustum during relation-data
     # capture; otherwise its arm covers most of the deliberately overlapping pair.

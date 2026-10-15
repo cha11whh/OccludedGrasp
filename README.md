@@ -167,6 +167,8 @@ PATH=/home/media/miniforge3/envs/isaaclab/bin:$PATH \
 
 The capture mode alternates which box is in front, varies their lateral overlap, and keeps separate objects for `NONE` pairs. It records the intended front/back object names and positions in `cycle_result.json`; the exporter uses this simulator layout annotation for the designed pair and verifies camera depth agrees. These are **simulator-generated proxy labels**, not human-verified real-scene labels or amodal ground truth. The exporter refuses datasets without positives and refuses train/validation splits missing any of the three classes. Eight smoke scenes yielded 7 directed pairs each way and 76 `NONE` rows, with all classes in both splits; this is only enough to exercise plumbing, not to claim model quality.
 
+The clutter scene now also includes non-box household-shape proxies: `GreenMugProxy` is a short green cylinder and `WaterBottleProxy` a taller, narrower cyan cylinder; the boxes remain to provide controlled occlusion pairs. These are intentionally low-fidelity collision/rendering primitives (the cup is not hollow and the bottle has no separate neck/cap), but Isaac segmentation assigns each one its own instance label so they enter relation inference and data export as distinct objects. A rendered smoke example is saved under [output/1015_household_shapes](output/1015_household_shapes/).
+
 Convert to the pair trainer ZIP + JSONL format, then fine-tune from the available base checkpoint:
 
 ```bash
