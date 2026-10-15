@@ -607,7 +607,10 @@ def main():
     ]
     clutter = {name: clutter_box(name, size, pos, color) for name, size, pos, color in clutter_specs}
     robot_cfg = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="/World/Robot")
-    robot_cfg.init_state.pos = (args.robot_x, args.robot_y, 0.70)
+    # Keep the Franka out of the fixed scene-camera frustum during relation-data
+    # capture; otherwise its arm covers most of the deliberately overlapping pair.
+    robot_x = 2.5 if args.randomize_obstruction_layouts else args.robot_x
+    robot_cfg.init_state.pos = (robot_x, args.robot_y, 0.70)
     robot_cfg.init_state.rot = (0.7071068, 0.0, 0.0, 0.7071068)
     robot = Articulation(cfg=robot_cfg)
     sim_utils.create_prim("/World/CameraRoot", "Xform")
