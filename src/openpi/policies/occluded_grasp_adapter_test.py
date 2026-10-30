@@ -32,6 +32,12 @@ def test_target_prompt_and_droid_observation_contract():
     assert result["observation/joint_position"].dtype == np.float32
 
 
+@pytest.mark.parametrize("arm", ["left", "right"])
+def test_target_prompt_identifies_routed_arm(arm):
+    result = build_pi05_observation(_ranked(), np.zeros((4, 5, 3), dtype=np.uint8), arm=arm)
+    assert result["prompt"].startswith(f"Use the {arm} arm to grasp the box")
+
+
 def test_clear_table_prompt_and_state_split():
     result = build_pi05_observation(_ranked("clear_table"), np.zeros((2, 3, 3), dtype=np.uint8), np.arange(8))
     assert result["prompt"].startswith("Use the right arm to clear the table")

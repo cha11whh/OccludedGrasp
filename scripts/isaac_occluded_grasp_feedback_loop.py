@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Same-scene occlusion -> Pi05 -> Franka proxy -> re-observe feedback smoke.
+"""Same-scene occlusion -> Pi05 -> one of two Panda arms -> re-observe feedback smoke.
 
 This validates the persistent simulation/inference/control loop with a Franka
 proxy and geometric clutter. Pi05-DROID actions are executed as bounded Panda
@@ -25,9 +25,24 @@ parser.add_argument("--randomize-obstruction-layouts", action="store_true",
                     help="Capture varied, deterministic clutter layouts for approximate obstruction-model training data.")
 parser.add_argument("--layout-seed", type=int, default=1337)
 parser.add_argument("--robot-x", type=float, default=0.0,
-                    help="Franka base X in the proxy scene.")
+                    help="Midpoint of the two arm bases (single-arm mode: base X).")
 parser.add_argument("--robot-y", type=float, default=-0.72,
                     help="Franka base Y in the proxy scene; move it closer to the cabinet to keep targets in reachable workspace.")
+parser.add_argument("--dual-arm", action=argparse.BooleanOptionalAction, default=True,
+                    help="Spawn independent left/right Panda arms and route each selected object to one arm.")
+parser.add_argument("--arm-routing", choices=("nearest", "frontal-affordance", "joint-affordance"), default="nearest",
+                    help="Choose nearest base, choose an arm for the ranker-selected object, or jointly rank target-route object and arm.")
+parser.add_argument("--joint-affordance-weight", type=float, default=0.60)
+parser.add_argument("--joint-path-weight", type=float, default=0.25)
+parser.add_argument("--joint-ranker-weight", type=float, default=0.15)
+parser.add_argument("--joint-rgbd-grasp-quality", action="store_true",
+                    help="Use uncalibrated RGB-D geometry in joint-affordance routing.")
+parser.add_argument("--joint-grasp-quality-weight", type=float, default=0.5,
+                    help="Fixed grasp-quality weight; motion feasibility receives 1-weight.")
+parser.add_argument("--arm-separation", type=float, default=1.36,
+                    help="Lateral distance between Panda bases in dual-arm mode (metres).")
+parser.add_argument("--right-arm-joint1-offset", type=float, default=0.0,
+                    help="Optional initial joint-1 perturbation (rad) for a paired state-sensitivity experiment.")
 parser.add_argument("--ik-steps-per-waypoint", type=int, default=120)
 parser.add_argument("--grasp-approach-distance", type=float, default=0.05)
 parser.add_argument("--grasp-lift-height", type=float, default=0.08)
@@ -66,6 +81,14 @@ if min(args.cycles, args.ik_steps_per_waypoint, args.gripper_close_steps, args.w
     parser.error("cycle/IK/close/image settings and grasp distances must be positive; warmup must be non-negative")
 if args.proxy_relocate_selected and args.pi05_execution_mode != "kinematic_proxy":
     parser.error("--proxy-relocate-selected requires --pi05-execution-mode kinematic_proxy")
+if args.arm_separation <= 0:
+    parser.error("--arm-separation must be positive")
+if not 0.0 <= args.joint_grasp_quality_weight <= 1.0:
+    parser.error("--joint-grasp-quality-weight must be in [0, 1]")
+if args.joint_rgbd_grasp_quality and args.arm_routing != "joint-affordance":
+    parser.error("--joint-rgbd-grasp-quality requires --arm-routing joint-affordance")
+if args.dual_arm and args.record_expert:
+    parser.error("dual-arm expert recording is not supported by the single-arm DROID dataset schema")
 if args.randomize_obstruction_layouts and not args.skip_model_inference:
     parser.error("--randomize-obstruction-layouts requires --skip-model-inference; collection must not invoke learned outputs as labels")
 if args.randomize_obstruction_layouts and (args.record_expert or args.proxy_relocate_selected):
@@ -92,6 +115,11 @@ from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "src"))
+from arm_conditioned_affordance import OBJECT_SIZES, score_frontal_affordance
+from occluded_grasp_arm_routing import choose_arm
+from occlusion_affordance_planner import select_joint_action
+from rgbd_geometric_grasp import rank_rgbd_grasp_candidates
+from rgbd_grasp_motion_fusion import select_joint_action_with_rgbd_quality
 from openpi.policies.pi05_droid_action import DROID_CONTROL_FREQUENCY_HZ, integrate_joint_velocity_action
 
 OPENPI_ROOT = SCRIPT_DIR.parent
@@ -151,7 +179,7 @@ def clutter_cylinder(name, radius, height, position, color):
 
 
 def set_obstruction_layout(clutter_assets, layout_index, rng, device):
-    """Arrange one overlapping front/back pair plus spatially separate negatives."""
+    """Vary the designated pair while keeping every object on the single shelf."""
     front_back_pairs = [
         ("RedBoxProxy", "BlueBoxProxy"),
         ("BlueBoxProxy", "RedBoxProxy"),
@@ -165,16 +193,16 @@ def set_obstruction_layout(clutter_assets, layout_index, rng, device):
     front_x = center_x - 0.025 + float(rng.uniform(-0.008, 0.008))
     back_x = center_x + 0.025 + float(rng.uniform(-0.008, 0.008))
     positions = {
-        front_name: (front_x, -0.10, 1.08 if front_name == "RedBoxProxy" else 1.05),
-        back_name: (back_x, -0.05, 1.08 if back_name == "RedBoxProxy" else 1.05),
-        "GreenMugProxy": (-0.39, -0.08, 1.0275),
-        "WaterBottleProxy": (0.33, -0.12, 1.56),
-        "YellowBoxProxy": (0.36, 0.08, 1.515),
-        "MilkCartonProxy": (-0.37, 0.08, 1.08),
-        "SoupCanProxy": (-0.35, -0.17, 1.045),
-        "BowlProxy": (0.38, -0.17, 1.015),
-        "DetergentBottleProxy": (-0.36, 0.08, 1.49),
-        "TissueBoxProxy": (0.02, 0.18, 1.48),
+        front_name: (front_x, -0.10, 1.0925 if front_name == "RedBoxProxy" else 1.0625),
+        back_name: (back_x, -0.05, 1.0925 if back_name == "RedBoxProxy" else 1.0625),
+        "GreenMugProxy": (0.0, -0.23, 1.0225),
+        "WaterBottleProxy": (0.32, 0.10, 1.3675),
+        "YellowBoxProxy": (-0.27, 0.10, 1.0675),
+        "MilkCartonProxy": (-0.27, 0.10, 1.2775),
+        "SoupCanProxy": (-0.27, 0.10, 1.4375),
+        "BowlProxy": (0.32, 0.10, 0.98),
+        "DetergentBottleProxy": (0.32, 0.10, 1.1175),
+        "TissueBoxProxy": (back_x, -0.05, 1.28 if back_name == "RedBoxProxy" else 1.22),
     }
     for name, asset in clutter_assets.items():
         root_state = asset.data.root_state_w[0].clone()
@@ -196,14 +224,22 @@ def run_stage(name, command, env, logs):
         print(result.stdout.rstrip(), flush=True)
 
 
-def capture(sim, camera, wrist_camera, out_dir, warmup):
+def capture(sim, camera, wrist_camera, out_dir, warmup, right_wrist_camera=None, overview_camera=None):
     for _ in range(args.warmup_steps if warmup else 2):
         sim.step()
         camera.update(dt=sim.get_physics_dt())
         wrist_camera.update(dt=sim.get_physics_dt())
+        if right_wrist_camera is not None:
+            right_wrist_camera.update(dt=sim.get_physics_dt())
+        if overview_camera is not None:
+            overview_camera.update(dt=sim.get_physics_dt())
     sim.step()
     camera.update(dt=sim.get_physics_dt(), force_recompute=True)
     wrist_camera.update(dt=sim.get_physics_dt(), force_recompute=True)
+    if right_wrist_camera is not None:
+        right_wrist_camera.update(dt=sim.get_physics_dt(), force_recompute=True)
+    if overview_camera is not None:
+        overview_camera.update(dt=sim.get_physics_dt(), force_recompute=True)
     rgb = camera.data.output["rgb"][0].detach().cpu().numpy()
     wrist_rgb = wrist_camera.data.output["rgb"][0].detach().cpu().numpy()
     depth = camera.data.output["distance_to_image_plane"][0].detach().cpu().numpy()
@@ -219,6 +255,12 @@ def capture(sim, camera, wrist_camera, out_dir, warmup):
     Image.fromarray(rgb).save(rgb_path)
     wrist_rgb_path = out_dir / "wrist_rgb.png"
     Image.fromarray(wrist_rgb).save(wrist_rgb_path)
+    if right_wrist_camera is not None:
+        right_rgb = right_wrist_camera.data.output["rgb"][0].detach().cpu().numpy()
+        Image.fromarray(right_rgb).save(out_dir / "wrist_rgb_right.png")
+    if overview_camera is not None:
+        overview_rgb = overview_camera.data.output["rgb"][0].detach().cpu().numpy()
+        Image.fromarray(overview_rgb).save(out_dir / "dual_arm_overview.png")
     # Copy metadata now because later camera updates overwrite camera.data.info.
     info = camera.data.info[0].get("instance_segmentation_fast") or {}
     info["configured_pose_ros"] = {"position_w": CAMERA_POSITION_W[0].detach().cpu().tolist(),
@@ -267,7 +309,7 @@ def pixel_to_world_grasp_point(camera, cycle_dir, labels, object_name):
 
 
 def execute_pi05_action_chunk(sim, robot, clutter_assets, actions, arm_ids, finger_ids, joint_limits,
-                              selected_name=None):
+                              selected_name=None, idle_robots=()):
     """Execute unnormalized Pi05-DROID joint velocities at the dataset control rate."""
     actions = np.asarray(actions, dtype=np.float32)
     if actions.ndim != 2 or actions.shape[1] != 8 or not np.isfinite(actions).all():
@@ -290,8 +332,12 @@ def execute_pi05_action_chunk(sim, robot, clutter_assets, actions, arm_ids, fing
         if args.pi05_execution_mode == "physics":
             for _ in range(physics_steps):
                 robot.write_data_to_sim()
+                for idle_robot in idle_robots:
+                    idle_robot.write_data_to_sim()
                 sim.step(render=False)
                 robot.update(sim.get_physics_dt())
+                for idle_robot in idle_robots:
+                    idle_robot.update(sim.get_physics_dt())
                 for asset in clutter_assets.values():
                     asset.update(sim.get_physics_dt())
         else:
@@ -546,7 +592,8 @@ def execute_visual_grasp(sim, robot, camera, clutter_assets, controller, arm_ids
             "success_definition": "contact IK reached, object rose by the configured threshold, and remained within 0.20 m of the hand"}
 
 
-def perceive_plan_infer(cycle_dir, rgb_path, wrist_rgb_path, depth_path, labels, model_env, robot_state):
+def perceive_plan_infer(cycle_dir, rgb_path, wrist_rgb_path, depth_path, labels, model_env,
+                        arm_states, arm_origins, object_positions, arm_affordance_inputs):
     masks = cycle_dir / "masks"
     (masks / "modal").mkdir(parents=True, exist_ok=True)
     (masks / "amodal").mkdir(parents=True, exist_ok=True)
@@ -567,9 +614,151 @@ def perceive_plan_infer(cycle_dir, rgb_path, wrist_rgb_path, depth_path, labels,
                         "mask_type": "sim_instance_segmentation"})
     if len(objects) < 2:
         raise RuntimeError(f"only {len(objects)} proxy clutter objects are visible")
+    def route_selected(ranked, relations):
+        grasp_quality_details = {}
+        if args.joint_rgbd_grasp_quality:
+            depth = np.load(depth_path)
+            camera_info = json.loads((cycle_dir / "camera_info.json").read_text(encoding="utf-8"))
+            intrinsics = np.asarray(camera_info["configured_pose_ros"]["intrinsic_matrix"], dtype=np.float32)
+            instance_ids = {str(label).rsplit("/", 1)[-1]: int(key) for key, label in labels.items()}
+            target_route_names = {
+                str(action["object_name"]) for action in ranked.get("ranked_actions", [])
+                if action.get("role") in {"target", "direct_target_blocker", "target_path_blocker"}
+            } & set(object_positions)
+            for object_name in sorted(target_route_names):
+                instance_id = instance_ids.get(object_name)
+                if instance_id is None:
+                    grasp_quality_details[object_name] = {"grasp_quality_score": 0.0, "candidate_count": 0, "error": "no camera instance ID"}
+                    continue
+                try:
+                    result = rank_rgbd_grasp_candidates(depth, seg == instance_id, intrinsics, z_range_m=(0.2, 2.2), top_k=20)
+                    grasp_quality_details[object_name] = {"grasp_quality_score": result["grasp_quality_score"], "candidate_count": result["candidate_count"], "top_candidates": result["candidates"][:5]}
+                except ValueError as exc:
+                    grasp_quality_details[object_name] = {"grasp_quality_score": 0.0, "candidate_count": 0, "error": str(exc)}
+            (cycle_dir / "rgbd_grasp_quality.json").write_text(json.dumps(grasp_quality_details, indent=2) + "\n", encoding="utf-8")
+        other_objects = [
+            {"name": name, "position": position, "size": OBJECT_SIZES[name]}
+            for name, position in object_positions.items()
+        ]
+        evaluation = {}
+        for candidate_name, position in object_positions.items():
+            candidate_obstacles = [item for item in other_objects if item["name"] != candidate_name]
+            scores = {
+                arm_name: score_frontal_affordance(
+                    object_name=candidate_name,
+                    object_position=position,
+                    arm_base_position=arm_data["base_position"],
+                    arm_yaw_rad=arm_data["yaw_rad"],
+                    hand_position=arm_data["hand_position"],
+                    joint_positions=arm_data["joint_positions"],
+                    joint_limits=arm_data["joint_limits"],
+                    other_objects=candidate_obstacles,
+                )
+                for arm_name, arm_data in arm_affordance_inputs.items()
+            }
+            nearest_choice = choose_arm(position, arm_origins)
+            affordance_choice = max(scores, key=lambda name: scores[name]["score"])
+            evaluation[candidate_name] = {
+                "arm_scores": scores,
+                "nearest_base_choice": nearest_choice,
+                "frontal_affordance_choice": affordance_choice,
+                "choices_agree": nearest_choice == affordance_choice,
+            }
+
+        joint_plan = None
+        original_top_action = ranked["ranked_actions"][0]
+        if args.arm_routing == "joint-affordance":
+            arm_scores = {name: row["arm_scores"] for name, row in evaluation.items()}
+            if args.joint_rgbd_grasp_quality:
+                joint_plan = select_joint_action_with_rgbd_quality(
+                    ranked, relations, arm_scores,
+                    {name: result["grasp_quality_score"] for name, result in grasp_quality_details.items()},
+                    grasp_quality_weight=args.joint_grasp_quality_weight,
+                    affordance_weight=args.joint_affordance_weight,
+                    path_weight=args.joint_path_weight,
+                    ranker_weight=args.joint_ranker_weight,
+                )
+            else:
+                joint_plan = select_joint_action(
+                    ranked, relations, arm_scores,
+                    affordance_weight=args.joint_affordance_weight,
+                    path_weight=args.joint_path_weight,
+                    ranker_weight=args.joint_ranker_weight,
+                )
+            if joint_plan["status"] != "selected":
+                (cycle_dir / "joint_affordance_plan.json").write_text(
+                    json.dumps(joint_plan, indent=2) + "\n", encoding="utf-8")
+                raise RuntimeError(
+                    "joint affordance planner found no feasible target route: "
+                    f"{joint_plan['reason']}"
+                )
+            selected_name = str(joint_plan["selected_object"])
+            selected_arm = str(joint_plan["selected_arm"])
+            ranked = dict(ranked)
+            ranked["ranker_top_action"] = original_top_action
+            ranked["joint_affordance_plan"] = joint_plan
+            ranked["ranked_actions"] = [joint_plan["selected_action"]] + [
+                action for action in ranked["ranked_actions"]
+                if str(action["object_name"]) != selected_name
+            ]
+        else:
+            selected_name = str(original_top_action["object_name"])
+            nearest_arm = evaluation[selected_name]["nearest_base_choice"]
+            affordance_arm = evaluation[selected_name]["frontal_affordance_choice"]
+            selected_arm = nearest_arm if args.arm_routing == "nearest" else affordance_arm
+
+        selected_scores = evaluation[selected_name]["arm_scores"]
+        nearest_arm = evaluation[selected_name]["nearest_base_choice"]
+        affordance_arm = evaluation[selected_name]["frontal_affordance_choice"]
+        arm_name = selected_arm
+        state = arm_states[arm_name]
+        wrist_path = wrist_rgb_path if arm_name == "left" else cycle_dir / "wrist_rgb_right.png"
+        np.save(cycle_dir / "pi05_state.npy", np.asarray(state, dtype=np.float32))
+        (cycle_dir / "arm_assignment.json").write_text(json.dumps({
+            "active_arm": arm_name, "selected_object": selected_name,
+            "routing_method": args.arm_routing,
+            "nearest_base_arm": nearest_arm,
+            "frontal_affordance_arm": affordance_arm,
+            "arm_assignment_agreement": nearest_arm == affordance_arm if args.arm_routing != "joint-affordance" else None,
+            "selected_object_affordance": selected_scores,
+            "ranker_top_object": original_top_action.get("object_name"),
+            "joint_affordance_plan": joint_plan,
+            "arm_base_positions": arm_origins,
+            "pi05_state": state.tolist(), "wrist_image": wrist_path.name,
+        }, indent=2) + "\n", encoding="utf-8")
+        agreements = [item["choices_agree"] for item in evaluation.values()]
+        evaluation_payload = {
+            "method": "uncalibrated frontal workspace + straight finger-corridor proxy; not a grasp probability",
+            "scene_id": cycle_dir.name,
+            "target": args.target,
+            "selected_object": selected_name,
+            "ranker_top_object": original_top_action.get("object_name"),
+            "selected_object_arm_scores": selected_scores,
+            "nearest_base_choice": nearest_arm,
+            "frontal_affordance_choice": affordance_arm,
+            "joint_planner_choice": None if joint_plan is None else {
+                "object": joint_plan["selected_object"], "arm": joint_plan["selected_arm"]},
+            "joint_affordance_plan": joint_plan,
+            "selected_object_choices_agree": nearest_arm == affordance_arm,
+            "object_level_choice_agreement_rate": float(np.mean(agreements)) if agreements else None,
+            "object_count": len(evaluation),
+            "both_arms_feasible_count": sum(
+                all(score["feasible_proxy"] for score in item["arm_scores"].values())
+                for item in evaluation.values()
+            ),
+            "neither_arm_feasible_count": sum(
+                not any(score["feasible_proxy"] for score in item["arm_scores"].values())
+                for item in evaluation.values()
+            ),
+            "objects": evaluation,
+        }
+        (cycle_dir / "arm_affordance_evaluation.json").write_text(
+            json.dumps(evaluation_payload, indent=2) + "\n", encoding="utf-8")
+        return arm_name, wrist_path, ranked
+
     if args.skip_model_inference:
         selected = next((obj for obj in objects if obj["class_name"] == args.target), objects[0])
-        ranked = {"ranked_actions": [{
+        ranked = {"target": {"id": selected["id"], "name": selected["class_name"]}, "ranked_actions": [{
             "object_id": selected["id"],
             "object_name": selected["class_name"],
             "role": "diagnostic_direct_target",
@@ -577,7 +766,8 @@ def perceive_plan_infer(cycle_dir, rgb_path, wrist_rgb_path, depth_path, labels,
         }]}
         actions = np.zeros((15, 8), dtype=np.float32)
         np.save(cycle_dir / "pi05_actions.npy", actions)
-        return ranked, actions
+        arm_name, _, ranked = route_selected(ranked, [])
+        return ranked, actions, arm_name
     modal_json, amodal_json = masks / "modal_metadata.json", masks / "amodal_metadata.json"
     modal_json.write_text(json.dumps([{"class_name": obj["class_name"], "mask": obj["mask"], "score": 1.0} for obj in objects], indent=2), encoding="utf-8")
     amodal_json.write_text(json.dumps(objects, indent=2), encoding="utf-8")
@@ -599,15 +789,19 @@ def perceive_plan_infer(cycle_dir, rgb_path, wrist_rgb_path, depth_path, labels,
                                 "--objects", str(relation_dir / "objects.json"), "--relations", str(relation_dir / "occ_detail.json"),
                                 "--target", args.target, "--depth", str(depth_path), "--out-dir", str(ranked_dir)], model_env, logs)
     ranked_path = ranked_dir / "ranked_actions.json"
+    ranked = json.loads(ranked_path.read_text(encoding="utf-8"))
+    relations = json.loads((relation_dir / "occ_detail.json").read_text(encoding="utf-8"))
+    arm_name, active_wrist_path, ranked = route_selected(ranked, relations)
+    ranked_path.write_text(json.dumps(ranked, indent=2) + "\n", encoding="utf-8")
     action_path = cycle_dir / "pi05_actions.npy"
     state_path = cycle_dir / "pi05_state.npy"
-    np.save(state_path, np.asarray(robot_state, dtype=np.float32))
     run_stage("pi05", [str(args.model_python), str(SCRIPT_DIR / "occluded_grasp_pi05_smoke.py"),
                         "--ranked-actions", str(ranked_path), "--image", str(rgb_path),
-                        "--wrist-image", str(wrist_rgb_path), "--state", str(state_path),
+                        "--wrist-image", str(active_wrist_path), "--state", str(state_path),
+                        "--arm", arm_name,
                         "--out", str(cycle_dir / "pi05_summary.json"), "--checkpoint", str(args.pi05_checkpoint),
                         "--actions-out", str(action_path)], model_env, logs)
-    return json.loads(ranked_path.read_text(encoding="utf-8")), np.load(action_path)
+    return ranked, np.load(action_path), arm_name
 
 
 def main():
@@ -621,45 +815,51 @@ def main():
     ground.func("/World/Ground", ground)
     light = sim_utils.DomeLightCfg(intensity=2500.0, color=(0.8, 0.8, 0.8))
     light.func("/World/Light", light)
-    static_box("/World/Cabinet/Back", (0.96, 0.06, 1.45), (0.0, 0.35, 1.10), (0.48, 0.34, 0.22), "cabinet")
-    static_box("/World/Cabinet/LeftWall", (0.06, 0.66, 1.50), (-0.51, 0.0, 1.10), (0.55, 0.40, 0.25), "cabinet")
-    static_box("/World/Cabinet/RightWall", (0.06, 0.66, 1.50), (0.51, 0.0, 1.10), (0.55, 0.40, 0.25), "cabinet")
-    static_box("/World/Cabinet/Bottom", (1.08, 0.70, 0.08), (0.0, 0.0, 0.36), (0.55, 0.40, 0.25), "cabinet")
+    static_box("/World/Cabinet/Back", (0.96, 0.06, 0.94), (0.0, 0.35, 1.40), (0.48, 0.34, 0.22), "cabinet")
+    static_box("/World/Cabinet/LeftWall", (0.06, 0.66, 0.94), (-0.51, 0.0, 1.40), (0.55, 0.40, 0.25), "cabinet")
+    static_box("/World/Cabinet/RightWall", (0.06, 0.66, 0.94), (0.51, 0.0, 1.40), (0.55, 0.40, 0.25), "cabinet")
+    # Shelf0 is the cabinet's sole floor (top surface z=0.9525); there is no
+    # second shelf or lower open cabinet compartment.
     static_box("/World/Cabinet/Top", (1.08, 0.70, 0.08), (0.0, 0.0, 1.84), (0.55, 0.40, 0.25), "cabinet")
     static_box("/World/Cabinet/Shelf0", (0.96, 0.62, 0.045), (0.0, 0.02, 0.93), (0.64, 0.48, 0.30), "shelf")
-    static_box("/World/Cabinet/Shelf1", (0.96, 0.62, 0.045), (0.0, 0.02, 1.40), (0.64, 0.48, 0.30), "shelf")
+    # One usable shelf: three vertically stacked groups share this surface.
+    # z values place each object's bottom on either the shelf or its supporter.
     clutter_specs = [
-        ("BlueBoxProxy", (0.25, 0.18, 0.22), (0.06, 0.04, 1.05), (0.20, 0.35, 0.85)),
-        ("RedBoxProxy", (0.19, 0.18, 0.28), (0.25, 0.10, 1.08), (0.85, 0.18, 0.12)),
-        ("YellowBoxProxy", (0.24, 0.18, 0.23), (-0.20, 0.08, 1.52), (0.85, 0.70, 0.12)),
-        ("MilkCartonProxy", (0.105, 0.105, 0.19), (-0.37, 0.08, 1.08), (0.93, 0.91, 0.78)),
-        ("TissueBoxProxy", (0.16, 0.12, 0.095), (0.02, 0.18, 1.48), (0.78, 0.68, 0.52)),
+        ("BlueBoxProxy", (0.25, 0.18, 0.22), (0.08, 0.12, 1.0625), (0.20, 0.35, 0.85)),
+        ("RedBoxProxy", (0.19, 0.18, 0.28), (0.04, 0.075, 1.3125), (0.85, 0.18, 0.12)),
+        ("YellowBoxProxy", (0.24, 0.18, 0.23), (-0.27, 0.10, 1.0675), (0.85, 0.70, 0.12)),
+        ("MilkCartonProxy", (0.105, 0.105, 0.19), (-0.27, 0.10, 1.2775), (0.93, 0.91, 0.78)),
+        ("TissueBoxProxy", (0.16, 0.12, 0.095), (0.04, 0.075, 1.50), (0.78, 0.68, 0.52)),
     ]
     clutter = {name: clutter_box(name, size, pos, color) for name, size, pos, color in clutter_specs}
     # Low-fidelity but non-box household shapes make scenes less toy-like while
     # preserving the existing labels used by the relation/ranking pipeline.
     clutter["GreenMugProxy"] = clutter_cylinder(
-        "GreenMugProxy", radius=0.055, height=0.14, position=(-0.10, -0.15, 1.0275), color=(0.10, 0.65, 0.25)
+        "GreenMugProxy", radius=0.055, height=0.14, position=(0.01, -0.22, 1.0225), color=(0.10, 0.65, 0.25)
     )
     clutter["WaterBottleProxy"] = clutter_cylinder(
-        "WaterBottleProxy", radius=0.042, height=0.28, position=(0.33, -0.12, 1.56), color=(0.12, 0.72, 0.82)
+        "WaterBottleProxy", radius=0.042, height=0.28, position=(0.32, 0.10, 1.3675), color=(0.12, 0.72, 0.82)
     )
     clutter["SoupCanProxy"] = clutter_cylinder(
-        "SoupCanProxy", radius=0.043, height=0.13, position=(-0.35, -0.17, 1.045), color=(0.83, 0.28, 0.12)
+        "SoupCanProxy", radius=0.043, height=0.13, position=(-0.27, 0.10, 1.4375), color=(0.83, 0.28, 0.12)
     )
     clutter["BowlProxy"] = clutter_cylinder(
-        "BowlProxy", radius=0.085, height=0.055, position=(0.38, -0.17, 1.015), color=(0.92, 0.78, 0.22)
+        "BowlProxy", radius=0.085, height=0.055, position=(0.32, 0.10, 0.98), color=(0.92, 0.78, 0.22)
     )
     clutter["DetergentBottleProxy"] = clutter_cylinder(
-        "DetergentBottleProxy", radius=0.058, height=0.22, position=(-0.36, 0.08, 1.49), color=(0.24, 0.48, 0.88)
+        "DetergentBottleProxy", radius=0.058, height=0.22, position=(0.32, 0.10, 1.1175), color=(0.24, 0.48, 0.88)
     )
-    robot_cfg = FRANKA_PANDA_HIGH_PD_CFG.replace(prim_path="/World/Robot")
-    # Keep the Franka out of the fixed scene-camera frustum during relation-data
-    # capture; otherwise its arm covers most of the deliberately overlapping pair.
     robot_x = 2.5 if args.randomize_obstruction_layouts else args.robot_x
-    robot_cfg.init_state.pos = (robot_x, args.robot_y, 0.70)
-    robot_cfg.init_state.rot = (0.7071068, 0.0, 0.0, 0.7071068)
-    robot = Articulation(cfg=robot_cfg)
+    arm_origins = {"left": (robot_x - args.arm_separation / 2 if args.dual_arm else robot_x, args.robot_y)}
+    if args.dual_arm:
+        arm_origins["right"] = (robot_x + args.arm_separation / 2, args.robot_y)
+    arms = {}
+    for name, (base_x, base_y) in arm_origins.items():
+        robot_cfg = FRANKA_PANDA_HIGH_PD_CFG.replace(
+            prim_path="/World/Robot" if name == "left" else "/World/RobotRight")
+        robot_cfg.init_state.pos = (base_x, base_y, 0.70)
+        robot_cfg.init_state.rot = (0.7071068, 0.0, 0.0, 0.7071068)
+        arms[name] = Articulation(cfg=robot_cfg)
     sim_utils.create_prim("/World/CameraRoot", "Xform")
     camera = Camera(CameraCfg(prim_path="/World/CameraRoot/Camera", update_period=0.0,
                              width=args.width, height=args.height,
@@ -667,20 +867,41 @@ def main():
                              colorize_instance_segmentation=False,
                              spawn=sim_utils.PinholeCameraCfg(focal_length=24.0, focus_distance=400.0,
                                                               horizontal_aperture=20.955, clipping_range=(0.05, 10.0))))
-    wrist_camera = Camera(CameraCfg(
-        prim_path="/World/Robot/panda_hand/wrist_cam", update_period=0.0,
-        width=args.width, height=args.height, data_types=["rgb"],
-        spawn=sim_utils.PinholeCameraCfg(focal_length=24.0, focus_distance=400.0,
-                                         horizontal_aperture=20.955, clipping_range=(0.1, 2.0)),
-        offset=CameraCfg.OffsetCfg(
-            pos=(0.13, 0.0, -0.15), rot=(-0.70614, 0.03701, 0.03701, -0.70614), convention="ros"
-        ),
-    ))
+    overview_camera = None
+    if args.dual_arm:
+        overview_camera = Camera(CameraCfg(
+            prim_path="/World/CameraRoot/Overview", update_period=0.0,
+            width=args.width, height=args.height, data_types=["rgb"],
+            spawn=sim_utils.PinholeCameraCfg(focal_length=16.0, focus_distance=400.0,
+                                             horizontal_aperture=20.955, clipping_range=(0.05, 10.0)),
+        ))
+    wrist_cameras = {}
+    for name in arms:
+        robot_path = "/World/Robot" if name == "left" else "/World/RobotRight"
+        wrist_cameras[name] = Camera(CameraCfg(
+            prim_path=f"{robot_path}/panda_hand/wrist_cam", update_period=0.0,
+            width=args.width, height=args.height, data_types=["rgb"],
+            spawn=sim_utils.PinholeCameraCfg(focal_length=24.0, focus_distance=400.0,
+                                             horizontal_aperture=20.955, clipping_range=(0.1, 2.0)),
+            offset=CameraCfg.OffsetCfg(
+                pos=(0.13, 0.0, -0.15), rot=(-0.70614, 0.03701, 0.03701, -0.70614), convention="ros"
+            ),
+        ))
     sim.reset()
-    robot.write_joint_state_to_sim(robot.data.default_joint_pos, robot.data.default_joint_vel)
-    robot.reset()
+    for robot in arms.values():
+        initial_joint_pos = robot.data.default_joint_pos.clone()
+        if args.dual_arm and args.right_arm_joint1_offset and robot is arms["right"]:
+            joint1_id = robot.joint_names.index("panda_joint1")
+            initial_joint_pos[:, joint1_id] += args.right_arm_joint1_offset
+            limits = robot.data.soft_joint_pos_limits[:, joint1_id, :]
+            initial_joint_pos[:, joint1_id] = torch.maximum(
+                torch.minimum(initial_joint_pos[:, joint1_id], limits[:, 1]), limits[:, 0])
+        robot.write_joint_state_to_sim(initial_joint_pos, robot.data.default_joint_vel)
+        robot.reset()
+        robot.set_joint_position_target(initial_joint_pos)
     sim.step(render=False)
-    robot.update(sim.get_physics_dt())
+    for robot in arms.values():
+        robot.update(sim.get_physics_dt())
     global CAMERA_POSITION_W, CAMERA_QUAT_ROS
     CAMERA_POSITION_W = torch.tensor([[0.0, -1.8, 1.25]], dtype=torch.float32, device=sim.device)
     camera_target_w = torch.tensor([[0.0, 0.10, 1.22]], dtype=torch.float32, device=sim.device)
@@ -691,18 +912,30 @@ def main():
     camera_rotation_ros = torch.stack((camera_right[0], camera_down[0], camera_forward[0]), dim=-1)[None, ...]
     CAMERA_QUAT_ROS = quat_from_matrix(camera_rotation_ros)
     camera.set_world_poses(CAMERA_POSITION_W, CAMERA_QUAT_ROS, convention="ros")
-    arm_ids = [robot.joint_names.index(f"panda_joint{i}") for i in range(1, 8)]
-    finger_ids = [i for i, name in enumerate(robot.joint_names) if name.startswith("panda_finger_joint")]
-    if len(finger_ids) != 2:
-        raise RuntimeError(f"expected two finger joints; got {finger_ids}")
-    limits = robot.data.soft_joint_pos_limits[:, arm_ids, :]
-    ee_body_id = robot.find_bodies("panda_hand")[0][0]
-    jacobian_body_id = ee_body_id - 1  # Panda is fixed-base; Jacobian excludes root.
-    robot.update(dt=sim.get_physics_dt())
-    controller = DifferentialIKController(
-        DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls"),
-        num_envs=1, device=sim.device,
-    )
+    if overview_camera is not None:
+        overview_position = torch.tensor([[0.0, -2.7, 1.8]], dtype=torch.float32, device=sim.device)
+        overview_look = torch.tensor([[0.0, -0.24, 1.18]], dtype=torch.float32, device=sim.device)
+        forward = torch.nn.functional.normalize(overview_look - overview_position, dim=-1)
+        right = torch.nn.functional.normalize(torch.cross(forward, world_up, dim=-1), dim=-1)
+        down = torch.nn.functional.normalize(torch.cross(forward, right, dim=-1), dim=-1)
+        overview_quat = quat_from_matrix(torch.stack((right[0], down[0], forward[0]), dim=-1)[None, ...])
+        overview_camera.set_world_poses(overview_position, overview_quat, convention="ros")
+    arm_contexts = {}
+    for name, robot in arms.items():
+        joint_ids = [robot.joint_names.index(f"panda_joint{i}") for i in range(1, 8)]
+        finger_ids = [i for i, joint_name in enumerate(robot.joint_names)
+                      if joint_name.startswith("panda_finger_joint")]
+        if len(finger_ids) != 2:
+            raise RuntimeError(f"{name}: expected two finger joints; got {finger_ids}")
+        arm_contexts[name] = {
+            "robot": robot, "arm_ids": joint_ids, "finger_ids": finger_ids,
+            "limits": robot.data.soft_joint_pos_limits[:, joint_ids, :],
+            "ee_body_id": robot.find_bodies("panda_hand")[0][0],
+            "controller": DifferentialIKController(
+                DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls"),
+                num_envs=1, device=sim.device,
+            ),
+        }
     records = []
     layout_rng = np.random.default_rng(args.layout_seed)
     for cycle in range(args.cycles):
@@ -713,19 +946,49 @@ def main():
             layout_info = set_obstruction_layout(clutter, cycle, layout_rng, sim.device)
         before = {name: asset.data.root_pos_w[0].detach().cpu().tolist() for name, asset in clutter.items()}
         rgb_path, wrist_rgb_path, depth_path, labels = capture(
-            sim, camera, wrist_camera, cycle_dir, warmup=(cycle == 0)
+            sim, camera, wrist_cameras["left"], cycle_dir, warmup=(cycle == 0),
+            right_wrist_camera=wrist_cameras.get("right"), overview_camera=overview_camera,
         )
-        robot_state = np.concatenate((
-            robot.data.joint_pos[0, arm_ids].detach().cpu().numpy(),
-            [float(torch.clamp(robot.data.joint_pos[0, finger_ids].mean() / 0.04, 0.0, 1.0).item())],
-        )).astype(np.float32)
-        ranked, action_chunk = perceive_plan_infer(
-            cycle_dir, rgb_path, wrist_rgb_path, depth_path, labels, model_env, robot_state
+        arm_states = {}
+        arm_affordance_inputs = {}
+        for name, context in arm_contexts.items():
+            robot = context["robot"]
+            robot.update(sim.get_physics_dt())
+            root_pose = robot.data.root_pose_w[0]
+            root_quat = root_pose[3:7]
+            qw, qx, qy, qz = (float(value) for value in root_quat.detach().cpu().tolist())
+            yaw = float(np.arctan2(2.0 * (qw * qz + qx * qy),
+                                   1.0 - 2.0 * (qy * qy + qz * qz)))
+            joint_positions = robot.data.joint_pos[0, context["arm_ids"]].detach().cpu().numpy()
+            joint_limits = robot.data.soft_joint_pos_limits[0, context["arm_ids"], :].detach().cpu().numpy()
+            arm_states[name] = np.concatenate((
+                joint_positions,
+                [float(torch.clamp(robot.data.joint_pos[0, context["finger_ids"]].mean() / 0.04,
+                                   0.0, 1.0).item())],
+            )).astype(np.float32)
+            arm_affordance_inputs[name] = {
+                "base_position": root_pose[:3].detach().cpu().numpy().tolist(),
+                "yaw_rad": yaw,
+                "hand_position": robot.data.body_pos_w[0, context["ee_body_id"]].detach().cpu().numpy().tolist(),
+                "joint_positions": joint_positions.tolist(),
+                "joint_limits": joint_limits.tolist(),
+            }
+        ranked, action_chunk, active_arm = perceive_plan_infer(
+            cycle_dir, rgb_path, wrist_rgb_path, depth_path, labels, model_env,
+            arm_states, arm_origins, before, arm_affordance_inputs,
         )
         selected = ranked["ranked_actions"][0]
         selected_name = str(selected["object_name"])
         if selected_name not in clutter:
             raise RuntimeError(f"ranker selected unknown proxy object {selected_name!r}")
+        active = arm_contexts[active_arm]
+        robot = active["robot"]
+        arm_ids, finger_ids = active["arm_ids"], active["finger_ids"]
+        limits, ee_body_id = active["limits"], active["ee_body_id"]
+        controller = active["controller"]
+        jacobian_body_id = ee_body_id - 1  # fixed-base Panda Jacobian omits root
+        wrist_camera = wrist_cameras[active_arm]
+        robot_state = arm_states[active_arm]
         grasp_point_world, camera_forward_world, grasp_observation = pixel_to_world_grasp_point(
             camera, cycle_dir, labels, selected_name
         )
@@ -733,14 +996,17 @@ def main():
             name: asset.data.root_pos_w[0].detach().cpu().tolist() for name, asset in clutter.items()
         }
         hand_before = robot.data.body_pos_w[0, ee_body_id].detach().cpu().numpy()
-        print(f"[cycle {cycle}] selected={selected_name} target={args.target} Pi05 chunk={action_chunk.shape}; control_source={args.control_source}", flush=True)
+        print(f"[cycle {cycle}] arm={active_arm} selected={selected_name} target={args.target} Pi05 chunk={action_chunk.shape}; control_source={args.control_source}", flush=True)
         pi05_execution = None
         grasp_result = None
         if args.control_source == "pi05":
             pi05_execution = execute_pi05_action_chunk(
                 sim, robot, clutter, action_chunk, arm_ids, finger_ids, limits,
                 selected_name=selected_name,
+                idle_robots=tuple(context["robot"] for name, context in arm_contexts.items()
+                                  if name != active_arm),
             )
+            pi05_execution["active_arm"] = active_arm
         else:
             grasp_result = execute_visual_grasp(sim, robot, camera, clutter, controller, arm_ids,
                                                 ee_body_id, jacobian_body_id, limits, finger_ids,
@@ -776,7 +1042,15 @@ def main():
                              and selected_lift >= args.success_lift_threshold and object_to_hand <= 0.20)
             pi05_execution["selected_object_vertical_displacement_m"] = selected_lift
             pi05_execution["selected_object_to_hand_after_m"] = object_to_hand
+        for context in arm_contexts.values():
+            context["robot"].update(sim.get_physics_dt())
         record = {"cycle": cycle, "selected": selected, "ranked_actions": ranked["ranked_actions"],
+                  "active_arm": active_arm, "arm_base_positions": arm_origins,
+                  "arm_states_before": {name: state.tolist() for name, state in arm_states.items()},
+                  "arm_states_after": {
+                      name: context["robot"].data.joint_pos[0, context["arm_ids"]].detach().cpu().tolist()
+                      for name, context in arm_contexts.items()
+                  },
                   "obstruction_data_layout": layout_info,
                   "control_source": args.control_source, "pi05_state": robot_state.tolist(),
                   "hand_object_distance_before_m": hand_object_distance_before,
@@ -805,7 +1079,10 @@ def main():
         "selected_objects": [record["selected"]["object_name"] for record in records],
     }
     final = {"schema": "occluded_grasp_pi05_feedback.v3", "simulator": "Isaac Sim 5.1 / Isaac Lab 2.3.2",
-             "robot": "Franka Panda proxy", "target": args.target, "evaluation": evaluation, "cycles": records,
+             "robot": "two independent Franka Panda arms" if args.dual_arm else "Franka Panda proxy",
+             "arm_base_positions": arm_origins,
+             "right_arm_joint1_offset_rad": args.right_arm_joint1_offset,
+             "target": args.target, "evaluation": evaluation, "cycles": records,
              "caveats": ["Scene, robot, camera and dynamic clutter objects persist across cycles; each cycle uses a new camera RGB-D and instance mask.",
                          "The selected instance ID mask centroid and camera depth are back-projected to a world grasp point; masks are simulator oracle segmentation.",
                          "Geometric clutter/cabinet are proxies; modal masks are reused as pseudo-amodal masks.",
