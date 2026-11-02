@@ -168,9 +168,9 @@ observation; it must not execute the policy score directly as a robot trajectory
 
 ## Relation-First Decision Contract (T01)
 
-## Relation-First Decision Contract (T02)
-computes the target's required predecessor closure, and selects only a currently
-confirmed legal candidate. Utility scoring remains deferred to T03.
+## Relation-First Decision Contract (T02/T03)
+computes the target's required predecessor closure and applies the same hard
+relation/visibility/feasibility gates before any candidate ordering.
 
 - `observation` is a mapping with a non-empty `observation_id`, boolean
   `is_stale`, `relation_coverage` (`complete`, `partial`, or `unknown`), an
@@ -199,8 +199,14 @@ confirmed legal candidate. Utility scoring remains deferred to T03.
   one record per observed object in `objects`; each record has `object_id` and
   `status` (`feasible`, `infeasible`, or `unknown`). Missing, stale, or malformed
   feasibility cannot authorize a selection.
-- `scoring_config` must be an empty mapping until T03 defines supported scoring
-  inputs. Non-empty configurations fail closed rather than being ignored.
+- `scoring_config` is either empty (the fixed baseline) or exactly
+  `{"mode": "fixed"}`, `{"mode": "feasibility"}`, or `{"mode": "utility"}`.
+  These are frozen configurations; extra keys and adjustable weights fail
+  closed. Fixed ordering uses ascending object ID. Feasibility ordering uses
+  `candidate_quality - execution_cost`; utility adds the normalized
+  `dependency_reach` term. Scored modes require finite `candidate_quality` and
+  `execution_cost` values in `[0, 1]` for every legal candidate; if any score is
+  missing or invalid, selection is `uncertain` rather than a partial ranking.
 - The relation direction is `blocker -> blocked`. Starting at `target_id`, the
   required set is the target plus every transitive incoming blocker; unrelated
   objects are never legal candidates. This is an AND dependency: all parent
@@ -211,9 +217,9 @@ confirmed legal candidate. Utility scoring remains deferred to T03.
   `feasibility: "feasible"`. `relation_coverage` must be `complete` before an
   absent edge can support selection; `partial` or `unknown` coverage yields no
   legal candidates and an `uncertain` decision. Missing/unknown visibility or
-  feasibility never authorizes selection. With the T03 scoring surface still
-  empty, legal IDs are sorted numerically and the smallest is selected; scoring
-  cannot override these gates.
+  feasibility never authorizes selection. Fixed mode chooses the smallest legal
+  ID; scored modes rank only after the same gates and break score ties by the
+  smallest ID. Scores cannot override these gates.
 - A relevant cycle returns `blocked` with `reason: "dependency_cycle"` and an
   empty legal set; the selector never breaks a cycle. Unknown evidence outside
   the target closure is diagnosed but does not veto an otherwise confirmed
@@ -226,6 +232,12 @@ confirmed legal candidate. Utility scoring remains deferred to T03.
   coverage, does **not** make an object clear: explicit covered visibility
   evidence is required. The existing `plan_graph_policy` and `online_replan`
   interfaces still emit policy rankings and are not this safety-gated seam.
+- Scored decisions report their `scoring_mode`, frozen `score_formula`, and
+  per-object score diagnostics. Utility's `dependency_reach` is the count of
+  unique transitive successors in the target dependency closure, normalized by
+  `max(1, required_dependency_count - 1)`. It is a structural heuristic only;
+  it does not claim that a successor is unlocked when its AND prerequisites
+  remain.
 ## Controlled Ablations
 
 Run all variants with the same JSONL split, seed, model shape, and training

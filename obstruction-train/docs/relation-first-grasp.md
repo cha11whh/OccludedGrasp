@@ -1,4 +1,4 @@
-# Relation-First Grasp: T00/T01/T02 Status
+# Relation-First Grasp: T00/T01/T02/T03 Status
 
 ## T00 — Baseline and seam
 
@@ -10,7 +10,7 @@
 
 - Visibility is explicitly `clear`, `occluded`, or `unknown` per object. Only IDs in `visibility_coverage` have visibility coverage evidence; omitted evidence/state stays unknown. `relation_coverage` alone cannot establish clear. Contradictions fail closed, including clear plus a positive incoming edge and occluded without an incoming edge when relation coverage is complete.
 - Feasibility requires a non-empty `observation_id` equal to the current observation ID. Missing IDs and mismatches are blocked; old feasibility is not reused.
-- At the T01 checkpoint the seam returned no object; T02 relation gating is recorded below. T03 scoring remains deferred.
+- At the T01 checkpoint the seam returned no object; T02 relation gating and T03 scoring are recorded below as subsequent checkpoints.
 
 Developer-reported public-test red/green runs, not independently retained as raw transcripts by the coordinator (each command used `timeout --signal=TERM --kill-after=5s 120s /home/media/zy/pi_work/.venv_perception/bin/python -m pytest -q <test-node>`):
 
@@ -25,9 +25,9 @@ The positive-edge-versus-clear contradiction test passed on its first run; no re
 
 ## T02 — Relation gating and evidence
 
-- `select_next_object` now computes the target's transitive incoming-blocker closure, gates candidates on that closure, no incoming edge, explicitly covered `clear` visibility, matching `feasible` status, and complete relation coverage. `partial` or `unknown` relation coverage cannot authorize selection. The empty scoring configuration remains required; scoring is deferred to T03.
+- At the T02 checkpoint, `select_next_object` computes the target's transitive incoming-blocker closure, gates candidates on that closure, no incoming edge, explicitly covered `clear` visibility, matching `feasible` status, and complete relation coverage. `partial` or `unknown` relation coverage cannot authorize selection. T02 required an empty scoring configuration; T03 adds explicit frozen scoring modes.
 - Legal candidate IDs are sorted numerically, so ties do not depend on object, relation, or feasibility input order. Shared predecessors in a diamond are included once in the closure. Relevant dependency cycles remain blocked.
-- All decision paths include `legal_candidate_ids`; early blocked decisions expose an empty list. The function docstring now describes implemented relation gating and deferred scoring.
+- All decision paths include `legal_candidate_ids`; early blocked decisions expose an empty list. The T02 docstring described relation gating with scoring deferred to T03.
 
 Observed T02 test evidence (CPU, existing `.venv_perception`, no installation):
 
@@ -46,3 +46,13 @@ Each targeted run used
 the full regression used
 `timeout --signal=TERM --kill-after=5s 120s /home/media/zy/pi_work/.venv_perception/bin/python -m pytest -q tests`.
 No GPU, package installation, or environment repair was performed.
+
+## T03 — Frozen candidate scoring
+
+- The seam accepts only frozen `fixed`, `feasibility`, and `utility` modes; fixed mode orders legal IDs, feasibility uses candidate quality minus execution cost, and utility adds normalized unique transitive successor reach. No weights are configurable.
+- Every mode uses the existing relation, confirmed-visibility, target-closure, and feasibility gates. Utility diagnostics call the successor term structural dependency reach and explicitly do not claim AND prerequisites are unlocked.
+- Scored modes fail closed with `uncertain` when any legal candidate lacks a finite normalized score; partial ranking does not choose among an incomplete legal set.
+- Environment: `/home/media/zy/pi_work/.venv_perception/bin/python`, Python 3.11.15, pytest 8.3.5; no install/upgrade. Initial developer environment-configuration tools were unavailable; the coordinator subsequently configured and retrieved this exact interpreter successfully before independent validation.
+- Developer-recorded evidence: existing interrupted policy tests ran before new behavior tests: 41 passed. New REDs were recorded for missing score semantics (`KeyError: 'scoring_mode'`) and mixed missing scores (`KeyError(2)` escaped instead of returning uncertain); each was followed by targeted GREEN. The coordinator did not independently retain those RED transcripts.
+- Coordinator-observed full CPU regression: `PYTHONPATH=obstruction-train CUDA_VISIBLE_DEVICES='' /home/media/zy/pi_work/.venv_perception/bin/python -m pytest -q obstruction-train/tests` — **48 passed in 1.21 seconds**. `git diff --check` passed.
+- Independent read-only `spec-reviewer`: PASS, no blocking findings. GPU, simulation and training: zero; this is candidate-selection logic, not evidence of physical grasp success.

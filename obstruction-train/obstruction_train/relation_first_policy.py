@@ -111,8 +111,17 @@ def _decision(status, observation_id, reason, object_ids=()):
     }
 
 
+def _bounded_score(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return 0 <= value <= 1 and math.isfinite(value)
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
 def select_next_object(observation, target_id, feasibility, scoring_config):
-    """Gate target dependencies with confirmed evidence; scoring is not implemented."""
+    """Apply shared relation/feasibility gates, then a frozen candidate ordering."""
     observation_id = (
         observation.get("observation_id")
         if isinstance(observation, Mapping) and isinstance(observation.get("observation_id"), str)
@@ -133,12 +142,29 @@ def select_next_object(observation, target_id, feasibility, scoring_config):
         return _decision("blocked", observation_id, "invalid_feasibility_schema", object_ids)
     if feasibility["observation_id"] != observation_id:
         return _decision("blocked", observation_id, "feasibility_observation_mismatch", object_ids)
-    if not isinstance(scoring_config, Mapping) or scoring_config:
+    if not isinstance(scoring_config, Mapping):
         return _decision("blocked", observation_id, "unsupported_scoring_config", object_ids)
+    if not scoring_config:
+        scoring_mode = "fixed"
+    elif (
+        set(scoring_config) == {"mode"}
+        and isinstance(scoring_config.get("mode"), str)
+        and scoring_config["mode"] in {"fixed", "feasibility", "utility"}
+    ):
+        scoring_mode = scoring_config["mode"]
+    else:
+        return _decision("blocked", observation_id, "unsupported_scoring_config", object_ids)
+    score_formula = {
+        "fixed": "ascending_object_id",
+        "feasibility": "candidate_quality - execution_cost",
+        "utility": "candidate_quality - execution_cost + dependency_reach",
+    }[scoring_mode]
     blockers_by_id = {object_id: set() for object_id in object_ids}
+    successors_by_id = {object_id: set() for object_id in object_ids}
     incoming = set()
     for relation in observation["relations"]:
         blockers_by_id[relation["blocked"]].add(relation["blocker"])
+        successors_by_id[relation["blocker"]].add(relation["blocked"])
         incoming.add(relation["blocked"])
     feasibility_by_id = {
         record["object_id"]: record["status"] for record in feasibility["objects"]
@@ -204,16 +230,51 @@ def select_next_object(observation, target_id, feasibility, scoring_config):
 
     if observation["relation_coverage"] != "complete":
         legal_candidate_ids = []
-    selected_id = legal_candidate_ids[0] if legal_candidate_ids else None
+    scoring_records = {
+        record["object_id"]: record for record in feasibility["objects"]
+    }
+    score_by_id = {}
+    dependency_reach_by_id = {}
+    if scoring_mode == "utility":
+        denominator = max(1, len(required_ids) - 1)
+        for object_id in legal_candidate_ids:
+            descendants = set()
+            pending = list(successors_by_id[object_id] & required_ids)
+            while pending:
+                descendant_id = pending.pop()
+                if descendant_id in descendants:
+                    continue
+                descendants.add(descendant_id)
+                pending.extend(successors_by_id[descendant_id] & required_ids - descendants)
+            dependency_reach_by_id[object_id] = len(descendants) / denominator
+    if scoring_mode in {"feasibility", "utility"}:
+        for object_id in legal_candidate_ids:
+            record = scoring_records[object_id]
+            quality = record.get("candidate_quality")
+            cost = record.get("execution_cost")
+            if _bounded_score(quality) and _bounded_score(cost):
+                score_by_id[object_id] = (
+                    quality - cost + dependency_reach_by_id.get(object_id, 0.0)
+                )
+    scores_unavailable = scoring_mode in {"feasibility", "utility"} and any(
+        object_id not in score_by_id for object_id in legal_candidate_ids
+    )
+    selected_id = (
+        min(legal_candidate_ids, key=lambda object_id: (-score_by_id[object_id], object_id))
+        if scoring_mode in {"feasibility", "utility"} and score_by_id and not scores_unavailable
+        else legal_candidate_ids[0] if scoring_mode == "fixed" and legal_candidate_ids
+        else None
+    )
     uncertain = any(
         item["reason"] in {"visibility_unknown", "feasibility_unknown", "relation_coverage_incomplete"}
         for item in diagnostics
         if item["object_id"] in required_ids
-    )
+    ) or scores_unavailable
     status = "selected" if selected_id is not None else "uncertain" if uncertain else "blocked"
     reason = (
         "target_clear" if selected_id == target_id
         else "dependency_clearance_required" if selected_id is not None
+        else "candidate_scores_unavailable" if scores_unavailable
         else "target_dependency_uncertain" if uncertain
         else "no_legal_candidate"
     )
@@ -221,4 +282,27 @@ def select_next_object(observation, target_id, feasibility, scoring_config):
     decision["next_object_id"] = selected_id
     decision["legal_candidate_ids"] = legal_candidate_ids
     decision["diagnostics"] = diagnostics
+    decision["scoring_mode"] = scoring_mode
+    decision["score_formula"] = score_formula
+    if scoring_mode == "utility":
+        decision["dependency_reach_semantics"] = (
+            "unique_transitive_successors_in_target_dependency_closure; structural_only; "
+            "does_not_assert_that_AND_prerequisites_are_unlocked"
+        )
+    if scoring_mode in {"feasibility", "utility"}:
+        for item in diagnostics:
+            object_id = item["object_id"]
+            record = scoring_records[object_id]
+            quality = record.get("candidate_quality")
+            cost = record.get("execution_cost")
+            item["candidate_quality"] = quality if _bounded_score(quality) else None
+            item["execution_cost"] = cost if _bounded_score(cost) else None
+            item["dependency_reach"] = dependency_reach_by_id.get(object_id)
+            item["total_score"] = score_by_id.get(object_id)
+            if object_id in legal_candidate_ids and object_id not in score_by_id:
+                item["reason"] = (
+                    "candidate_score_missing"
+                    if quality is None or cost is None
+                    else "candidate_score_invalid"
+                )
     return decision
