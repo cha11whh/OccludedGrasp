@@ -166,6 +166,55 @@ previous grasp outcome. A robot bridge should collect calibrated RGB-D, run
 perception, execute its safety-checked grasp controller, then append the next
 observation; it must not execute the policy score directly as a robot trajectory.
 
+## Relation-First Decision Contract (T01)
+
+The public CPU seam is `obstruction_train.relation_first_policy.select_next_object(
+observation, target_id, feasibility, scoring_config)`. It currently validates
+inputs and deliberately returns no selected object; relation gating and utility
+scoring belong to T02 and T03.
+
+- `observation` is a mapping with a non-empty `observation_id`, boolean
+  `is_stale`, `relation_coverage` (`complete`, `partial`, or `unknown`), an
+  `objects` list, an optional `visibility_coverage` list (omitted means empty),
+  and a `relations` list. Object
+  IDs are unique positive integers. Each object has `visibility` (`clear`,
+  `occluded`, or `unknown`); omitted visibility is treated as `unknown`. The
+  coverage list contains unique object IDs for which visibility was assessed;
+  any non-`unknown` state without its ID in this list is downgraded to
+  `unknown`. Missing coverage evidence never authorizes a clear state.
+- Each obstruction relation has `blocker`, `blocked`, and finite `confidence`
+  in `[0, 1]`; both IDs must exist in the same observation. A positive incoming
+  obstruction relation contradicting `visibility: "clear"` invalidates the
+  observation and fails closed. When `relation_coverage` is `complete`, an
+  `occluded` object must have an incoming obstruction relation; otherwise the
+  contradictory observation fails closed.
+- `relations` contains positive obstruction edges only. An absent edge means
+  unknown, never clear. `relation_coverage: "complete"` attests that the
+  positive relation list is exhaustive, but does not by itself prove an object
+  clear; explicit `visibility: "clear"` plus its coverage entry is required.
+- `is_stale` is a required freshness attestation supplied by the observation
+  adapter. Missing attestation or `is_stale: true` fails closed. This seam does
+  not calculate age from timestamps.
+- `feasibility` must include an `observation_id` exactly matching the current
+  observation, a non-empty `coordinate_frame`, `distance_unit: "m"`, and exactly
+  one record per observed object in `objects`; each record has `object_id` and
+  `status` (`feasible`, `infeasible`, or `unknown`). Missing, stale, or malformed
+  feasibility cannot authorize a selection.
+- `scoring_config` must be an empty mapping until T03 defines supported scoring
+  inputs. Non-empty configurations fail closed rather than being ignored.
+- The decision includes `status`, nullable `next_object_id`,
+  `observation_id`, `reason`, and per-object `diagnostics`. Invalid/stale input
+  and absent targets are `blocked`; otherwise the current implementation is
+  `uncertain` with `next_object_id: null` and reason
+  `selection_deferred_until_t02_t03`.
+
+  An empty relation list, even with `relation_coverage: "complete"`, does **not**
+  mean that any object is clear; clear requires an explicit per-object state and
+  coverage entry. Unknown visibility is surfaced in that object's diagnostics.
+  T01 does not compute relation closure, legal candidate sets, feasibility beyond
+  schema validation, or scores; it therefore never selects an object. The existing
+  `plan_graph_policy` and `online_replan` interfaces continue to emit policy
+  rankings and are not this safety-gated seam.
 ## Controlled Ablations
 
 Run all variants with the same JSONL split, seed, model shape, and training
