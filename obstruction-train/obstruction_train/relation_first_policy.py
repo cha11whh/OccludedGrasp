@@ -106,12 +106,13 @@ def _decision(status, observation_id, reason, object_ids=()):
         "next_object_id": None,
         "observation_id": observation_id,
         "reason": reason,
+        "legal_candidate_ids": [],
         "diagnostics": [{"object_id": object_id, "reason": reason} for object_id in object_ids],
     }
 
 
 def select_next_object(observation, target_id, feasibility, scoring_config):
-    """Return a fail-closed decision until relation gating and scoring exist."""
+    """Gate target dependencies with confirmed evidence; scoring is not implemented."""
     observation_id = (
         observation.get("observation_id")
         if isinstance(observation, Mapping) and isinstance(observation.get("observation_id"), str)
@@ -134,8 +135,90 @@ def select_next_object(observation, target_id, feasibility, scoring_config):
         return _decision("blocked", observation_id, "feasibility_observation_mismatch", object_ids)
     if not isinstance(scoring_config, Mapping) or scoring_config:
         return _decision("blocked", observation_id, "unsupported_scoring_config", object_ids)
-    decision = _decision("uncertain", observation_id, "selection_deferred_until_t02_t03", object_ids)
-    for diagnostic in decision["diagnostics"]:
-        if visibility_by_id[diagnostic["object_id"]] == "unknown":
-            diagnostic["reason"] = "visibility_unknown"
+    blockers_by_id = {object_id: set() for object_id in object_ids}
+    incoming = set()
+    for relation in observation["relations"]:
+        blockers_by_id[relation["blocked"]].add(relation["blocker"])
+        incoming.add(relation["blocked"])
+    feasibility_by_id = {
+        record["object_id"]: record["status"] for record in feasibility["objects"]
+    }
+    required_ids = set()
+    pending = [target_id]
+    while pending:
+        object_id = pending.pop()
+        if object_id in required_ids:
+            continue
+        required_ids.add(object_id)
+        pending.extend(blockers_by_id[object_id] - required_ids)
+
+    visiting = set()
+    visited = set()
+
+    def has_cycle(object_id):
+        if object_id in visiting:
+            return True
+        if object_id in visited:
+            return False
+        visiting.add(object_id)
+        if any(has_cycle(blocker_id) for blocker_id in blockers_by_id[object_id]):
+            return True
+        visiting.remove(object_id)
+        visited.add(object_id)
+        return False
+
+    if any(has_cycle(object_id) for object_id in required_ids):
+        decision = _decision("blocked", observation_id, "dependency_cycle")
+        decision["legal_candidate_ids"] = []
+        decision["diagnostics"] = [
+            {
+                "object_id": object_id,
+                "reason": "blocked_by_dependency_cycle" if object_id in required_ids else "not_in_target_dependencies",
+            }
+            for object_id in object_ids
+        ]
+        return decision
+
+    legal_candidate_ids = sorted(
+        object_id
+        for object_id in required_ids
+        if object_id not in incoming
+        and visibility_by_id[object_id] == "clear"
+        and feasibility_by_id[object_id] == "feasible"
+    )
+    diagnostics = []
+    for object_id in object_ids:
+        if visibility_by_id[object_id] == "unknown":
+            reason = "visibility_unknown"
+        elif object_id not in required_ids:
+            reason = "not_in_target_dependencies"
+        elif object_id in incoming:
+            reason = "blocked_by_required_predecessor"
+        elif feasibility_by_id[object_id] != "feasible":
+            reason = f"feasibility_{feasibility_by_id[object_id]}"
+        elif observation["relation_coverage"] != "complete":
+            reason = "relation_coverage_incomplete"
+        else:
+            reason = "legal_candidate"
+        diagnostics.append({"object_id": object_id, "reason": reason})
+
+    if observation["relation_coverage"] != "complete":
+        legal_candidate_ids = []
+    selected_id = legal_candidate_ids[0] if legal_candidate_ids else None
+    uncertain = any(
+        item["reason"] in {"visibility_unknown", "feasibility_unknown", "relation_coverage_incomplete"}
+        for item in diagnostics
+        if item["object_id"] in required_ids
+    )
+    status = "selected" if selected_id is not None else "uncertain" if uncertain else "blocked"
+    reason = (
+        "target_clear" if selected_id == target_id
+        else "dependency_clearance_required" if selected_id is not None
+        else "target_dependency_uncertain" if uncertain
+        else "no_legal_candidate"
+    )
+    decision = _decision(status, observation_id, reason)
+    decision["next_object_id"] = selected_id
+    decision["legal_candidate_ids"] = legal_candidate_ids
+    decision["diagnostics"] = diagnostics
     return decision

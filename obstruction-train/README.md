@@ -168,10 +168,9 @@ observation; it must not execute the policy score directly as a robot trajectory
 
 ## Relation-First Decision Contract (T01)
 
-The public CPU seam is `obstruction_train.relation_first_policy.select_next_object(
-observation, target_id, feasibility, scoring_config)`. It currently validates
-inputs and deliberately returns no selected object; relation gating and utility
-scoring belong to T02 and T03.
+## Relation-First Decision Contract (T02)
+computes the target's required predecessor closure, and selects only a currently
+confirmed legal candidate. Utility scoring remains deferred to T03.
 
 - `observation` is a mapping with a non-empty `observation_id`, boolean
   `is_stale`, `relation_coverage` (`complete`, `partial`, or `unknown`), an
@@ -202,19 +201,31 @@ scoring belong to T02 and T03.
   feasibility cannot authorize a selection.
 - `scoring_config` must be an empty mapping until T03 defines supported scoring
   inputs. Non-empty configurations fail closed rather than being ignored.
-- The decision includes `status`, nullable `next_object_id`,
-  `observation_id`, `reason`, and per-object `diagnostics`. Invalid/stale input
-  and absent targets are `blocked`; otherwise the current implementation is
-  `uncertain` with `next_object_id: null` and reason
-  `selection_deferred_until_t02_t03`.
-
-  An empty relation list, even with `relation_coverage: "complete"`, does **not**
-  mean that any object is clear; clear requires an explicit per-object state and
-  coverage entry. Unknown visibility is surfaced in that object's diagnostics.
-  T01 does not compute relation closure, legal candidate sets, feasibility beyond
-  schema validation, or scores; it therefore never selects an object. The existing
-  `plan_graph_policy` and `online_replan` interfaces continue to emit policy
-  rankings and are not this safety-gated seam.
+- The relation direction is `blocker -> blocked`. Starting at `target_id`, the
+  required set is the target plus every transitive incoming blocker; unrelated
+  objects are never legal candidates. This is an AND dependency: all parent
+  branches stay in the closure, while one confirmed frontmost object may be
+  selected per observation.
+- A legal candidate must be in that closure, have no incoming edge, have
+  explicitly covered `visibility: "clear"`, and have matching
+  `feasibility: "feasible"`. `relation_coverage` must be `complete` before an
+  absent edge can support selection; `partial` or `unknown` coverage yields no
+  legal candidates and an `uncertain` decision. Missing/unknown visibility or
+  feasibility never authorizes selection. With the T03 scoring surface still
+  empty, legal IDs are sorted numerically and the smallest is selected; scoring
+  cannot override these gates.
+- A relevant cycle returns `blocked` with `reason: "dependency_cycle"` and an
+  empty legal set; the selector never breaks a cycle. Unknown evidence outside
+  the target closure is diagnosed but does not veto an otherwise confirmed
+  target. Feasibility `unknown` is uncertain; `infeasible` is rejected. No
+  execution-completion state is accepted or inferred by this seam.
+- The decision includes `status`, nullable `next_object_id`, `observation_id`,
+  `reason`, sorted `legal_candidate_ids`, and per-object rejection diagnostics.
+  Invalid/stale input and absent targets remain `blocked`; uncertainty never
+  fabricates a selection. An empty relation list, even with complete relation
+  coverage, does **not** make an object clear: explicit covered visibility
+  evidence is required. The existing `plan_graph_policy` and `online_replan`
+  interfaces still emit policy rankings and are not this safety-gated seam.
 ## Controlled Ablations
 
 Run all variants with the same JSONL split, seed, model shape, and training
