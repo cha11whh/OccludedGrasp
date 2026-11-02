@@ -257,3 +257,14 @@ edges, and no nearby edges. Compare `top1_accuracy`,
 `equivalent_action_ids` field records multiple equally valid next actions; an
 optional `grasp_succeeded` field gives the observed execution success rate.
 Repeat each variant over at least three seeds before reporting a result.
+
+## Replay-Only T06
+
+`obstruction_train.replay_only.run_replay` provides a CPU-only replay seam for
+the select → execute → verify → observe → replan loop. It is not a perception,
+robot, or simulator integration and does not provide physical-grasp evidence.
+See [the relation-first-grasp task notes](docs/relation-first-grasp.md#t06--cpu-only-replay-loop)
+for the callback contract, safety limits, test evidence, and outstanding T04/T05
+gates. Replay rejects new object identities and contradictory unconfirmed
+removal observations; verified removal without verified placement stops before
+another simulated action.

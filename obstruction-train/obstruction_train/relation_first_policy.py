@@ -100,6 +100,22 @@ def _valid_feasibility(feasibility, object_ids):
     return seen == set(object_ids)
 
 
+def validate_snapshot(observation, feasibility):
+    """Validate a fresh snapshot without requiring a target to remain visible."""
+    valid, object_ids, _ = _valid_observation(observation)
+    if not valid:
+        return "invalid_observation_schema"
+    if observation["is_stale"]:
+        return "stale_observation"
+    if not isinstance(feasibility, Mapping) or feasibility.get("distance_unit") != "m":
+        return "unsupported_distance_unit"
+    if not _valid_feasibility(feasibility, object_ids):
+        return "invalid_feasibility_schema"
+    if feasibility["observation_id"] != observation["observation_id"]:
+        return "feasibility_observation_mismatch"
+    return None
+
+
 def _decision(status, observation_id, reason, object_ids=()):
     return {
         "status": status,
