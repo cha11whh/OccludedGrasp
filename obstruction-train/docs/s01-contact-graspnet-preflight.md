@@ -1,4 +1,4 @@
-# S01 Contact-GraspNet preflight — blocked pending use-scope confirmation
+# S01 Contact-GraspNet preflight — official artifact download blocked
 
 Date: 2026-11-03. Static inspection only; no model, Python import, compilation,
 weight download, dependency installation, training or GPU inference was run.
@@ -31,10 +31,32 @@ evaluation. Redistribution and attribution conditions also apply. This is not
 an MIT/Apache license. Weight-specific terms must also be checked when acquiring
 weights; source permission must not be silently assumed to cover all artifacts.
 
-The user's intended commercial/non-commercial scope has not been explicitly
-established. Under the approved plan, do not download/deploy/run this backend
-until the user confirms an allowed research/evaluation scope, or approves an
-alternative backend with suitable terms. Do not silently switch models.
+The user explicitly confirmed non-commercial research/evaluation on 2026-11-03.
+That source use-scope gate is resolved. Weight-specific terms remain to be
+checked; do not silently switch models or treat source permission as a universal
+permission for every model artifact.
+
+## Continuation after use-scope confirmation
+
+- Isolated clean source clone created at
+  `/home/media/zy/pi_work/.scratch/frozen-grasp-scoring/runtime/contact_graspnet`,
+  HEAD `721706067cc7f7889c32afe7b4f7955eb90bd866`; original dirty binaries were
+  not copied or modified.
+- Official public subfolder was read over verified HTTPS:
+  `https://drive.google.com/drive/folders/1vcHNeKgMpHpeWKggkRdWmMr4-ymEPQx8`.
+  It lists `checkpoint`, `config.yaml`, and `model.ckpt-144144` components.
+- Actual config download using `curl --cacert /etc/ssl/certs/ca-certificates.crt`
+  failed with curl error 60 (unable to get local issuer certificate). The direct
+  `drive.usercontent.google.com` endpoint also failed TLS verification; its
+  response showed a Fortinet proxy connection. This is not a request for user
+  credentials. Certificate checks were not disabled; no untrusted mirror used.
+- No official model config/weights were obtained or hashed. No inference
+  environment was installed; no TensorFlow/custom-op or checkpoint restore test
+  was performed. Existing environment metadata contains multiple TensorFlow and
+  NumPy dist-info versions and is not assumed to be a clean runtime.
+- A separate CPU contract slice can proceed with injected test predictors, but
+  is not evidence that Contact-GraspNet actually ran. Download/ABI/model gates
+  remain open. No GPU occupation, training or simulation occurred.
 
 ## Deployment facts and pending verification
 
@@ -54,8 +76,9 @@ alternative backend with suitable terms. Do not silently switch models.
 
 ## Status
 
-S00 CPU budget infrastructure is implemented; its separate review determines
-whether it can be committed. S01 is **partial/blocked**, not complete. S02—S06
-actual backend deployment and benchmarks have not started. New-stage GPU
+S00 CPU budget infrastructure was reviewed and committed as `503a4fd`. S01 is
+**partial/blocked**, not complete. S02 CPU contract work is separate from actual
+backend deployment. Actual model execution and S03—S06 benchmarks have not
+started. New-stage GPU
 occupation remains **0 seconds of 7200 seconds**; no production budget run was
 performed. Unit-test temporary ledgers are not the production budget ledger.
