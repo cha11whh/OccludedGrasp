@@ -82,6 +82,88 @@ def test_default_persistent_budget_is_7200_seconds(tmp_path):
     assert json.loads(ledger_path.read_text())["budget_seconds"] == 7200
 
 
+def test_explicit_14400_second_budget_is_allowed_and_persisted(tmp_path):
+    ledger_path = tmp_path / "gpu-budget.json"
+
+    result = run_bounded(
+        [sys.executable, "-c", "pass"],
+        ledger_path=ledger_path,
+        timeout_seconds=5,
+        budget_seconds=14400,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(ledger_path.read_text())["budget_seconds"] == 14400
+
+
+def test_persisted_14400_second_budget_can_be_reused(tmp_path):
+    ledger_path = tmp_path / "gpu-budget.json"
+
+    first = run_bounded(
+        [sys.executable, "-c", "pass"],
+        ledger_path=ledger_path,
+        timeout_seconds=5,
+        budget_seconds=14400,
+    )
+    second = run_bounded(
+        [sys.executable, "-c", "pass"],
+        ledger_path=ledger_path,
+        timeout_seconds=5,
+        budget_seconds=14400,
+    )
+
+    assert first.returncode == second.returncode == 0
+    assert json.loads(ledger_path.read_text())["budget_seconds"] == 14400
+
+
+def test_existing_ledger_budget_cannot_be_changed_before_worker_start(tmp_path):
+    import pytest
+    from obstruction_train.budget_runner import BudgetError
+
+    for existing_cap, requested_cap in ((7200, 14400), (14400, 7200)):
+        ledger_path = tmp_path / f"budget-{existing_cap}.json"
+        marker = tmp_path / f"worker-started-{existing_cap}"
+        run_bounded(
+            [sys.executable, "-c", "pass"],
+            ledger_path=ledger_path,
+            timeout_seconds=5,
+            budget_seconds=existing_cap,
+        )
+
+        with pytest.raises(BudgetError, match="differs from the persisted ledger"):
+            run_bounded(
+                [
+                    sys.executable,
+                    "-c",
+                    f"open({str(marker)!r}, 'w').close()",
+                ],
+                ledger_path=ledger_path,
+                timeout_seconds=5,
+                budget_seconds=requested_cap,
+            )
+
+        assert not marker.exists()
+
+
+def test_invalid_budget_values_are_rejected_before_worker_start(tmp_path):
+    import pytest
+
+    for index, budget in enumerate((14401, float("inf"), float("nan"), True)):
+        marker = tmp_path / f"worker-started-{index}"
+        with pytest.raises(ValueError, match="budget_seconds"):
+            run_bounded(
+                [
+                    sys.executable,
+                    "-c",
+                    f"open({str(marker)!r}, 'w').close()",
+                ],
+                ledger_path=tmp_path / f"invalid-{index}.json",
+                timeout_seconds=5,
+                budget_seconds=budget,
+            )
+        assert not marker.exists()
+
+
 def test_failed_command_is_also_charged_to_persistent_budget(tmp_path):
     result = run_bounded(
         [sys.executable, "-c", "import sys; print('failed'); sys.exit(7)"],

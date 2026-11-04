@@ -16,6 +16,7 @@ from typing import Sequence
 
 
 DEFAULT_BUDGET_SECONDS = 7200.0
+MAX_BUDGET_SECONDS = 14400.0
 _CLEANUP_RESERVE_SECONDS = 0.5
 
 
@@ -45,8 +46,8 @@ def run_bounded(
         raise ValueError("command must be a non-empty argument sequence")
     if not _finite_number(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
-    if not _finite_number(budget_seconds) or not 0 < budget_seconds <= DEFAULT_BUDGET_SECONDS:
-        raise ValueError("budget_seconds must be in (0, 7200]")
+    if not _finite_number(budget_seconds) or not 0 < budget_seconds <= MAX_BUDGET_SECONDS:
+        raise ValueError("budget_seconds must be in (0, 14400]")
 
     ledger = Path(ledger_path)
     ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +62,7 @@ def run_bounded(
                 not isinstance(state, dict)
                 or set(state) - {"budget_seconds", "charged_seconds", "pending"}
                 or not _finite_number(state.get("budget_seconds"))
-                or not 0 < state["budget_seconds"] <= DEFAULT_BUDGET_SECONDS
+                or not 0 < state["budget_seconds"] <= MAX_BUDGET_SECONDS
                 or not _finite_number(state.get("charged_seconds"))
                 or state["charged_seconds"] < 0
                 or ("pending" in state and type(state["pending"]) is not bool)
