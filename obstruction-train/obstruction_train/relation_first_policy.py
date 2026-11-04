@@ -100,6 +100,37 @@ def _valid_feasibility(feasibility, object_ids):
     return seen == set(object_ids)
 
 
+def prediction_candidate_ids(observation, target_id):
+    """Return evidenced clear roots in the target dependency closure, pre-feasibility."""
+    valid, object_ids, visibility_by_id = _valid_observation(observation)
+    if (
+        not valid
+        or observation["is_stale"]
+        or observation["relation_coverage"] != "complete"
+        or not _is_object_id(target_id)
+        or target_id not in object_ids
+    ):
+        return None
+    blockers_by_id = {object_id: set() for object_id in object_ids}
+    incoming = set()
+    for relation in observation["relations"]:
+        blockers_by_id[relation["blocked"]].add(relation["blocker"])
+        incoming.add(relation["blocked"])
+    required_ids = set()
+    pending = [target_id]
+    while pending:
+        object_id = pending.pop()
+        if object_id in required_ids:
+            continue
+        required_ids.add(object_id)
+        pending.extend(blockers_by_id[object_id] - required_ids)
+    return sorted(
+        object_id
+        for object_id in required_ids
+        if object_id not in incoming and visibility_by_id[object_id] == "clear"
+    )
+
+
 def validate_snapshot(observation, feasibility):
     """Validate a fresh snapshot without requiring a target to remain visible."""
     valid, object_ids, _ = _valid_observation(observation)

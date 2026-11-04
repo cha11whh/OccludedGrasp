@@ -1,3 +1,29 @@
+import obstruction_train.relation_first_policy as policy
+
+
+def test_prediction_candidates_are_clear_required_roots_before_feasibility():
+    observation = {
+        "observation_id": "obs-1",
+        "is_stale": False,
+        "relation_coverage": "complete",
+        "visibility_coverage": [1, 2, 3],
+        "objects": [
+            {"id": 1, "visibility": "clear"},
+            {"id": 2, "visibility": "clear"},
+            {"id": 3, "visibility": "occluded"},
+            {"id": 4, "visibility": "clear"},
+        ],
+        "relations": [
+            {"blocker": 1, "blocked": 3, "confidence": 1.0},
+            {"blocker": 2, "blocked": 3, "confidence": 1.0},
+        ],
+    }
+
+    candidate_ids = getattr(policy, "prediction_candidate_ids", lambda *_: None)(
+        observation, 3
+    )
+
+    assert candidate_ids == [1, 2]
 import sys
 from pathlib import Path
 import pytest
